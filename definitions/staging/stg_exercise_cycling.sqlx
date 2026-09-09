@@ -1,0 +1,145 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_exercise_cycling",
+  description: "Staging de actividades de ciclismo (activity_name contiene 'bicicleta' o 'ciclismo'), con el array heart_rate_zones aplanado: una fila por actividad y zona de frecuencia cardiaca.",
+  tags: ["staging", "health", "cycling"],
+  assertions: {
+    uniqueKey: ["exercise_log_id", "hr_zone_order"],
+    nonNull: ["exercise_log_id", "start_at", "activity_name"]
+  },
+  columns: {
+    exercise_log_id: "Identificador del log de ejercicio. NO es único en esta tabla: se repite una vez por zona de frecuencia cardiaca.",
+    hr_zone_order: "Posición (0-based) de la zona de FC dentro del array original. Junto con exercise_log_id forma la clave única. NULL cuando la actividad no trae zonas.",
+    hr_zone_name: "Nombre de la zona de FC tal como viene del origen, en español y con el typo original ('Fuera del rangoo').",
+    hr_zone_min_bpm: "Límite inferior de pulsaciones de la zona.",
+    hr_zone_max_bpm: "Límite superior de pulsaciones de la zona.",
+    hr_zone_minutes: "Minutos que la actividad pasó en esta zona de FC.",
+    hr_zone_calories_out: "Calorías quemadas en esta zona de FC.",
+    activity_name: "Nombre de la actividad ('Ciclismo' o 'Bicicleta en exteriores').",
+    activity_type_id: "Identificador numérico del tipo de actividad.",
+    start_at: "Inicio de la actividad en hora local del dispositivo (DATETIME, sin zona horaria).",
+    original_start_at: "Inicio original de la actividad antes de ediciones manuales (DATETIME).",
+    last_modified_at: "Última modificación del registro (DATETIME).",
+    start_date: "Fecha (DATE) de inicio de la actividad.",
+    duration_ms: "Duración total de la actividad en milisegundos.",
+    active_duration_ms: "Duración activa de la actividad en milisegundos.",
+    original_duration_ms: "Duración original de la actividad en milisegundos, antes de ediciones.",
+    duration_min: "Duración total en minutos (redondeado a 2 decimales).",
+    active_duration_min: "Duración activa en minutos (redondeado a 2 decimales).",
+    calories: "Calorías totales de la actividad completa (se repite en cada fila de zona; NO sumar).",
+    avg_heart_rate: "Frecuencia cardiaca promedio de la actividad completa.",
+    distance_km: "Distancia recorrida en kilómetros (NULL si la unidad de origen no es 'Kilometer').",
+    distance_unit: "Unidad de distancia original reportada por el dispositivo.",
+    speed_kmh: "Velocidad promedio reportada por el dispositivo.",
+    pace: "Ritmo (pace) reportado por el dispositivo.",
+    elevation_gain_m: "Ganancia de elevación reportada por el dispositivo.",
+    steps: "Número de pasos durante la actividad.",
+    has_gps: "Indica si la actividad tiene datos de GPS.",
+    has_active_zone_minutes: "Indica si la actividad tiene minutos de zona activa calculados.",
+    should_fetch_details: "Bandera del dispositivo para indicar si se deben obtener más detalles.",
+    log_type: "Origen del log: 'tracker' o 'auto_detected'.",
+    minutes_sedentary: "Minutos en nivel de actividad sedentario (de la actividad completa).",
+    minutes_lightly: "Minutos en nivel de actividad ligero (de la actividad completa).",
+    minutes_fairly: "Minutos en nivel de actividad moderado (de la actividad completa).",
+    minutes_very: "Minutos en nivel de actividad intenso (de la actividad completa).",
+    azm_total_minutes: "Minutos totales de zona activa de la actividad completa.",
+    azm_out_of_zone_minutes: "Minutos de zona activa fuera de rango (OUT_OF_ZONE).",
+    azm_fat_burn_minutes: "Minutos de zona activa de quema de grasa (FAT_BURN).",
+    azm_cardio_minutes: "Minutos de zona activa cardio (CARDIO).",
+    azm_peak_minutes: "Minutos de zona activa pico (PEAK).",
+    source_type: "Tipo de fuente del registro.",
+    source_name: "Nombre de la fuente del registro.",
+    source_id: "Identificador de la fuente del registro.",
+    source_url: "URL de la fuente del registro.",
+    tracker_features: "Features del tracker de origen, colapsadas a un string separado por comas para no multiplicar filas al aplanar. NULL cuando la actividad no trae source.",
+    manual_calories: "Indica si las calorías fueron especificadas manualmente.",
+    manual_distance: "Indica si la distancia fue especificada manualmente.",
+    manual_steps: "Indica si los pasos fueron especificados manualmente.",
+    tcx_link: "Enlace al archivo TCX de la actividad, si existe.",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+with cycling as (
+  select *
+  from ${ref("stg_exercise")}
+  where regexp_contains(lower(activity_name), r'bicicleta|ciclismo')
+)
+
+select
+  c.exercise_log_id,
+
+  -- Aplanado del array heart_rate_zones. LEFT JOIN (no CROSS JOIN) para no perder
+  -- las actividades cuyo array viene vacío: 1 de las 183 de ciclismo no trae zonas.
+  zone_offset as hr_zone_order,
+  z.zone_name as hr_zone_name,
+  z.min_bpm as hr_zone_min_bpm,
+  z.max_bpm as hr_zone_max_bpm,
+  z.minutes as hr_zone_minutes,
+  z.calories_out as hr_zone_calories_out,
+
+  c.activity_name,
+  c.activity_type_id,
+
+  c.start_at,
+  c.original_start_at,
+  c.last_modified_at,
+  c.start_date,
+
+  c.duration_ms,
+  c.active_duration_ms,
+  c.original_duration_ms,
+  c.duration_min,
+  c.active_duration_min,
+
+  c.calories,
+  c.avg_heart_rate,
+
+  c.distance_km,
+  c.distance_unit,
+  c.speed_kmh,
+  c.pace,
+  c.elevation_gain_m,
+  c.steps,
+
+  c.has_gps,
+  c.has_active_zone_minutes,
+  c.should_fetch_details,
+  c.log_type,
+
+  c.minutes_sedentary,
+  c.minutes_lightly,
+  c.minutes_fairly,
+  c.minutes_very,
+
+  c.azm_total_minutes,
+  c.azm_out_of_zone_minutes,
+  c.azm_fat_burn_minutes,
+  c.azm_cardio_minutes,
+  c.azm_peak_minutes,
+
+  c.source_type,
+  c.source_name,
+  c.source_id,
+  c.source_url,
+
+  -- tracker_features es el otro array de la tabla. Se colapsa a string en vez de
+  -- aplanarse: hacer UNNEST de los dos arrays a la vez daría un producto cartesiano
+  -- (4 zonas x 6 features = 24 filas por actividad) y el grano dejaría de tener sentido.
+  array_to_string(c.tracker_features, ',') as tracker_features,
+
+  c.manual_calories,
+  c.manual_distance,
+  c.manual_steps,
+
+  c.tcx_link,
+
+  c.source_year,
+  c.source_month,
+  current_timestamp() as loaded_at
+
+from cycling c
+left join unnest(c.heart_rate_zones) as z with offset as zone_offset
