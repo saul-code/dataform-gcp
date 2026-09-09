@@ -1,6 +1,6 @@
 config {
   type: "table",
-  schema: "silver",
+  schema: "bronze",
   name: "stg_sleep",
   description: "Staging de sesiones de sueño: una fila por logId, tipos casteados y levels.summary aplanado.",
   tags: ["staging", "health"],

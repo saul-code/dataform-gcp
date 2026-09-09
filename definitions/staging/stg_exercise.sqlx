@@ -1,6 +1,6 @@
 config {
   type: "table",
-  schema: "silver",
+  schema: "bronze",
   name: "stg_exercise",
   description: "Staging de sesiones de ejercicio: una fila por logId, tipos casteados y arrays pivotados.",
   tags: ["staging", "health"],
