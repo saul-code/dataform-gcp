@@ -1,0 +1,125 @@
+config {
+  type: "table",
+  schema: "silver",
+  name: "stg_sleep",
+  description: "Staging de sesiones de sueño: una fila por logId, tipos casteados y levels.summary aplanado.",
+  tags: ["staging", "health"],
+  assertions: {
+    uniqueKey: ["sleep_log_id"],
+    nonNull: ["sleep_log_id", "sleep_date", "start_at"]
+  },
+  columns: {
+    sleep_log_id: "Identificador único del log de sueño (logId).",
+    sleep_date: "Fecha del sueño registrada por el dispositivo (dateOfSleep, parseada).",
+    start_at: "Inicio de la sesión de sueño en hora local del dispositivo (DATETIME, sin zona horaria).",
+    end_at: "Fin de la sesión de sueño en hora local del dispositivo (DATETIME, sin zona horaria).",
+    duration_ms: "Duración total de la sesión en milisegundos.",
+    duration_min: "Duración total de la sesión en minutos (redondeado a 2 decimales).",
+    time_in_bed_min: "Minutos totales en cama.",
+    minutes_asleep: "Minutos totales dormido.",
+    minutes_awake: "Minutos totales despierto dentro de la sesión.",
+    minutes_to_fall_asleep: "Minutos que tardó en quedarse dormido.",
+    minutes_after_wakeup: "Minutos en cama después de despertar.",
+    efficiency_pct: "Porcentaje de eficiencia del sueño reportado por el dispositivo.",
+    is_main_sleep: "Indica si esta fue la sesión principal de sueño del día.",
+    sleep_type: "Tipo de registro de sueño: 'stages' (con fases deep/light/rem/wake) o 'classic' (con asleep/awake/restless).",
+    log_type: "Origen del log (siempre 'auto_detected' en los datos observados).",
+    info_code: "Código informativo del dispositivo.",
+    deep_count: "Número de periodos en fase deep (solo sleep_type = 'stages').",
+    deep_minutes: "Minutos totales en fase deep.",
+    deep_avg_30d_minutes: "Promedio de minutos en fase deep en los últimos 30 días.",
+    light_count: "Número de periodos en fase light (solo sleep_type = 'stages').",
+    light_minutes: "Minutos totales en fase light.",
+    light_avg_30d_minutes: "Promedio de minutos en fase light en los últimos 30 días.",
+    rem_count: "Número de periodos en fase rem (solo sleep_type = 'stages').",
+    rem_minutes: "Minutos totales en fase rem.",
+    rem_avg_30d_minutes: "Promedio de minutos en fase rem en los últimos 30 días.",
+    wake_count: "Número de periodos en fase wake (solo sleep_type = 'stages').",
+    wake_minutes: "Minutos totales en fase wake.",
+    wake_avg_30d_minutes: "Promedio de minutos en fase wake en los últimos 30 días.",
+    asleep_count: "Número de periodos dormido (solo sleep_type = 'classic').",
+    asleep_minutes: "Minutos totales dormido (solo sleep_type = 'classic').",
+    awake_count: "Número de periodos despierto (solo sleep_type = 'classic').",
+    awake_minutes: "Minutos totales despierto (solo sleep_type = 'classic').",
+    restless_count: "Número de periodos inquieto (solo sleep_type = 'classic').",
+    restless_minutes: "Minutos totales inquieto (solo sleep_type = 'classic').",
+    sleep_stages: "Array de fases de sueño detalladas (levels.data): start_at, level, seconds.",
+    sleep_short_stages: "Array de fases cortas de sueño (levels.shortData): start_at, level, seconds.",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+with deduped as (
+  select
+    t.*,
+    row_number() over (partition by t.logId order by to_json_string(t)) as rn
+  from ${ref("raw_sleep")} t
+)
+
+select
+  logId as sleep_log_id,
+  parse_date('%Y-%m-%d', dateOfSleep) as sleep_date,
+  parse_datetime('%Y-%m-%dT%H:%M:%E3S', startTime) as start_at,
+  parse_datetime('%Y-%m-%dT%H:%M:%E3S', endTime) as end_at,
+  duration as duration_ms,
+  round(duration / 60000, 2) as duration_min,
+  timeInBed as time_in_bed_min,
+  minutesAsleep as minutes_asleep,
+  minutesAwake as minutes_awake,
+  minutesToFallAsleep as minutes_to_fall_asleep,
+  minutesAfterWakeup as minutes_after_wakeup,
+  efficiency as efficiency_pct,
+  mainSleep as is_main_sleep,
+  type as sleep_type,
+  logType as log_type,
+  infoCode as info_code,
+
+  levels.summary.deep.count as deep_count,
+  levels.summary.deep.minutes as deep_minutes,
+  levels.summary.deep.thirtyDayAvgMinutes as deep_avg_30d_minutes,
+
+  levels.summary.light.count as light_count,
+  levels.summary.light.minutes as light_minutes,
+  levels.summary.light.thirtyDayAvgMinutes as light_avg_30d_minutes,
+
+  levels.summary.rem.count as rem_count,
+  levels.summary.rem.minutes as rem_minutes,
+  levels.summary.rem.thirtyDayAvgMinutes as rem_avg_30d_minutes,
+
+  levels.summary.wake.count as wake_count,
+  levels.summary.wake.minutes as wake_minutes,
+  levels.summary.wake.thirtyDayAvgMinutes as wake_avg_30d_minutes,
+
+  levels.summary.asleep.count as asleep_count,
+  levels.summary.asleep.minutes as asleep_minutes,
+
+  levels.summary.awake.count as awake_count,
+  levels.summary.awake.minutes as awake_minutes,
+
+  levels.summary.restless.count as restless_count,
+  levels.summary.restless.minutes as restless_minutes,
+
+  array(
+    select as struct
+      parse_datetime('%Y-%m-%dT%H:%M:%E3S', d.dateTime) as start_at,
+      d.level,
+      d.seconds
+    from unnest(levels.data) d
+  ) as sleep_stages,
+
+  array(
+    select as struct
+      parse_datetime('%Y-%m-%dT%H:%M:%E3S', d.dateTime) as start_at,
+      d.level,
+      d.seconds
+    from unnest(levels.shortData) d
+  ) as sleep_short_stages,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from deduped
+where rn = 1

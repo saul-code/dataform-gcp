@@ -1,0 +1,136 @@
+config {
+  type: "table",
+  schema: "silver",
+  name: "stg_exercise",
+  description: "Staging de sesiones de ejercicio: una fila por logId, tipos casteados y arrays pivotados.",
+  tags: ["staging", "health"],
+  assertions: {
+    uniqueKey: ["exercise_log_id"],
+    nonNull: ["exercise_log_id", "start_at"]
+  },
+  columns: {
+    exercise_log_id: "Identificador único del log de ejercicio (logId).",
+    activity_name: "Nombre de la actividad reportada por el dispositivo.",
+    activity_type_id: "Identificador numérico del tipo de actividad.",
+    start_at: "Inicio de la actividad en hora local del dispositivo (DATETIME, sin zona horaria).",
+    original_start_at: "Inicio original de la actividad antes de ediciones manuales (DATETIME).",
+    last_modified_at: "Última modificación del registro (DATETIME).",
+    start_date: "Fecha (DATE) de inicio de la actividad, derivada de start_at.",
+    duration_ms: "Duración total de la actividad en milisegundos.",
+    active_duration_ms: "Duración activa de la actividad en milisegundos.",
+    original_duration_ms: "Duración original de la actividad en milisegundos, antes de ediciones.",
+    duration_min: "Duración total en minutos (redondeado a 2 decimales).",
+    active_duration_min: "Duración activa en minutos (redondeado a 2 decimales).",
+    calories: "Calorías totales quemadas durante la actividad.",
+    avg_heart_rate: "Frecuencia cardiaca promedio durante la actividad.",
+    distance_km: "Distancia recorrida en kilómetros (NULL si distanceUnit no es 'Kilometer').",
+    distance_unit: "Unidad de distancia original reportada por el dispositivo.",
+    speed_kmh: "Velocidad promedio reportada por el dispositivo.",
+    pace: "Ritmo (pace) reportado por el dispositivo.",
+    elevation_gain_m: "Ganancia de elevación reportada por el dispositivo.",
+    steps: "Número de pasos durante la actividad.",
+    pool_length: "Longitud de alberca (natación), si aplica.",
+    pool_length_unit: "Unidad de longitud de alberca, si aplica.",
+    swim_lengths: "Número de largos nadados, si aplica.",
+    has_gps: "Indica si la actividad tiene datos de GPS.",
+    has_active_zone_minutes: "Indica si la actividad tiene minutos de zona activa calculados.",
+    should_fetch_details: "Bandera del dispositivo para indicar si se deben obtener más detalles de la actividad.",
+    log_type: "Origen del log: 'tracker' o 'auto_detected'.",
+    minutes_sedentary: "Minutos en nivel de actividad sedentario.",
+    minutes_lightly: "Minutos en nivel de actividad ligero.",
+    minutes_fairly: "Minutos en nivel de actividad moderado.",
+    minutes_very: "Minutos en nivel de actividad intenso.",
+    azm_total_minutes: "Minutos totales de zona activa (activeZoneMinutes.totalMinutes).",
+    azm_out_of_zone_minutes: "Minutos de zona activa fuera de rango (OUT_OF_ZONE).",
+    azm_fat_burn_minutes: "Minutos de zona activa de quema de grasa (FAT_BURN).",
+    azm_cardio_minutes: "Minutos de zona activa cardio (CARDIO).",
+    azm_peak_minutes: "Minutos de zona activa pico (PEAK).",
+    heart_rate_zones: "Array de zonas de frecuencia cardiaca (nombres en español, sin pivotear): zone_name, min_bpm, max_bpm, minutes, calories_out.",
+    source_type: "Tipo de fuente del registro (source.type).",
+    source_name: "Nombre de la fuente del registro (source.name).",
+    source_id: "Identificador de la fuente del registro (source.id).",
+    source_url: "URL de la fuente del registro (source.url).",
+    tracker_features: "Lista de features del tracker de origen (source.trackerFeatures).",
+    manual_calories: "Indica si las calorías fueron especificadas manualmente.",
+    manual_distance: "Indica si la distancia fue especificada manualmente.",
+    manual_steps: "Indica si los pasos fueron especificados manualmente.",
+    tcx_link: "Enlace al archivo TCX de la actividad, si existe.",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+select
+  logId as exercise_log_id,
+  activityName as activity_name,
+  activityTypeId as activity_type_id,
+
+  parse_datetime('%m/%d/%y %H:%M:%S', startTime) as start_at,
+  parse_datetime('%m/%d/%y %H:%M:%S', originalStartTime) as original_start_at,
+  parse_datetime('%m/%d/%y %H:%M:%S', lastModified) as last_modified_at,
+  date(parse_datetime('%m/%d/%y %H:%M:%S', startTime)) as start_date,
+
+  duration as duration_ms,
+  activeDuration as active_duration_ms,
+  originalDuration as original_duration_ms,
+  round(duration / 60000, 2) as duration_min,
+  round(activeDuration / 60000, 2) as active_duration_min,
+
+  calories,
+  averageHeartRate as avg_heart_rate,
+
+  if(distanceUnit = 'Kilometer', distance, null) as distance_km,
+  distanceUnit as distance_unit,
+
+  speed as speed_kmh,
+  pace,
+  elevationGain as elevation_gain_m,
+  steps,
+  poolLength as pool_length,
+  poolLengthUnit as pool_length_unit,
+  swimLengths as swim_lengths,
+
+  hasGps as has_gps,
+  hasActiveZoneMinutes as has_active_zone_minutes,
+  shouldFetchDetails as should_fetch_details,
+  logType as log_type,
+
+  (select al.minutes from unnest(activityLevel) al where al.name = 'sedentary') as minutes_sedentary,
+  (select al.minutes from unnest(activityLevel) al where al.name = 'lightly') as minutes_lightly,
+  (select al.minutes from unnest(activityLevel) al where al.name = 'fairly') as minutes_fairly,
+  (select al.minutes from unnest(activityLevel) al where al.name = 'very') as minutes_very,
+
+  activeZoneMinutes.totalMinutes as azm_total_minutes,
+  (select z.minutes from unnest(activeZoneMinutes.minutesInHeartRateZones) z where z.type = 'OUT_OF_ZONE') as azm_out_of_zone_minutes,
+  (select z.minutes from unnest(activeZoneMinutes.minutesInHeartRateZones) z where z.type = 'FAT_BURN') as azm_fat_burn_minutes,
+  (select z.minutes from unnest(activeZoneMinutes.minutesInHeartRateZones) z where z.type = 'CARDIO') as azm_cardio_minutes,
+  (select z.minutes from unnest(activeZoneMinutes.minutesInHeartRateZones) z where z.type = 'PEAK') as azm_peak_minutes,
+
+  array(
+    select as struct
+      z.name as zone_name,
+      z.min as min_bpm,
+      z.max as max_bpm,
+      z.minutes,
+      z.caloriesOut as calories_out
+    from unnest(heartRateZones) z
+  ) as heart_rate_zones,
+
+  source.type as source_type,
+  source.name as source_name,
+  source.id as source_id,
+  source.url as source_url,
+  source.trackerFeatures as tracker_features,
+
+  manualValuesSpecified.calories as manual_calories,
+  manualValuesSpecified.distance as manual_distance,
+  manualValuesSpecified.steps as manual_steps,
+
+  tcxLink as tcx_link,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_exercise")}
