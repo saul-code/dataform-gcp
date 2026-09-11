@@ -1,0 +1,170 @@
+config {
+  type: "table",
+  schema: "silver",
+  name: "exercise_cycling",
+  description: "Recorridos en bicicleta limpios y listos para visualización: una fila por actividad, zonas de FC pivoteadas a columnas, horarios convertidos de UTC a hora local, métricas sin medición en NULL (no en 0) y sesiones basura (< 5 min) descartadas.",
+  tags: ["silver", "health", "cycling"],
+  assertions: {
+    uniqueKey: ["exercise_log_id"],
+    nonNull: ["exercise_log_id", "start_at_utc", "start_at_local", "start_date_local", "duration_min", "calories"],
+    rowConditions: [
+      "duration_min >= 5",
+      "distance_km is null or distance_km > 0",
+      "avg_speed_kmh is null or avg_speed_kmh between 1 and 60",
+      "avg_heart_rate is null or avg_heart_rate between 40 and 220",
+      // Si el origen renombra una zona, sus minutos dejan de pivotearse y la suma se queda corta.
+      "abs(coalesce(hr_zone_out_of_range_min, 0) + coalesce(hr_zone_fat_burn_min, 0) + coalesce(hr_zone_cardio_min, 0) + coalesce(hr_zone_peak_min, 0) - duration_min) <= 2"
+    ]
+  },
+  columns: {
+    exercise_log_id: "Identificador único del recorrido (logId).",
+    activity_name: "Nombre de la actividad: 'Ciclismo' (iniciada a mano en el reloj) o 'Bicicleta en exteriores' (auto-detectada).",
+    tracking_mode: "Cómo se registró el recorrido: 'Manual' (log_type = 'tracker') o 'Auto-detectado' (log_type = 'auto_detected'). Los auto-detectados nunca traen distancia, velocidad ni GPS.",
+    start_at_utc: "Inicio del recorrido (TIMESTAMP, UTC).",
+    start_at_local: "Inicio del recorrido en hora local (DATETIME).",
+    end_at_local: "Fin del recorrido en hora local (DATETIME), calculado como inicio + duración total.",
+    start_date_local: "Fecha local del recorrido.",
+    start_week_local: "Lunes de la semana local del recorrido, para agrupar por semana.",
+    start_month_local: "Primer día del mes local del recorrido, para agrupar por mes.",
+    start_hour_local: "Hora local de inicio (0-23).",
+    day_of_week_local: "Día de la semana local, ISO: 1 = lunes ... 7 = domingo. Útil para ordenar ejes.",
+    day_name_local: "Nombre del día de la semana local en español ('lunes' ... 'domingo').",
+    is_weekend: "TRUE si el recorrido empezó en sábado o domingo (hora local).",
+    time_of_day: "Franja del día según la hora local de inicio: 'Madrugada' (0-5), 'Mañana' (6-11), 'Tarde' (12-18), 'Noche' (19-23).",
+    duration_min: "Duración total en minutos.",
+    active_duration_min: "Duración activa en minutos.",
+    distance_km: "Distancia en km. NULL si no se midió (auto-detectados y recorridos manuales sin señal GPS, que el origen reporta como 0).",
+    avg_speed_kmh: "Velocidad promedio en km/h reportada por el reloj. NULL cuando no hay distancia.",
+    elevation_gain_m: "Ganancia de elevación en metros. NULL sin GPS (el origen reporta 0 aunque no haya medido).",
+    has_gps: "Indica si el recorrido tiene datos de GPS.",
+    calories: "Calorías totales del recorrido (ya sin duplicar por zona: se puede sumar).",
+    calories_per_min: "Calorías por minuto activo.",
+    avg_heart_rate: "Frecuencia cardiaca promedio del recorrido.",
+    hr_zone_out_of_range_min: "Minutos fuera de rango de FC (por debajo de quema de grasas).",
+    hr_zone_fat_burn_min: "Minutos en zona de FC de quema de grasas.",
+    hr_zone_cardio_min: "Minutos en zona de FC cardio.",
+    hr_zone_peak_min: "Minutos en zona de FC pico.",
+    hr_zone_out_of_range_pct: "% del tiempo en zonas fuera de rango de FC (sobre el total de minutos en zonas).",
+    hr_zone_fat_burn_pct: "% del tiempo en zona de quema de grasas.",
+    hr_zone_cardio_pct: "% del tiempo en zona cardio.",
+    hr_zone_peak_pct: "% del tiempo en zona pico.",
+    minutes_sedentary: "Minutos en nivel de actividad sedentario.",
+    minutes_lightly: "Minutos en nivel de actividad ligero.",
+    minutes_fairly: "Minutos en nivel de actividad moderado.",
+    minutes_very: "Minutos en nivel de actividad intenso.",
+    azm_total_minutes: "Minutos totales de zona activa (Active Zone Minutes).",
+    azm_fat_burn_minutes: "Minutos de zona activa de quema de grasas.",
+    azm_cardio_minutes: "Minutos de zona activa cardio (cuentan doble en azm_total_minutes).",
+    azm_peak_minutes: "Minutos de zona activa pico (cuentan doble en azm_total_minutes).",
+    loaded_at: "Timestamp en que se materializó esta fila en silver."
+  }
+}
+
+js {
+  // start_at llega en UTC desde staging: en hora UTC, 62 recorridos caían dentro de una sesión de
+  // sueño principal (stg_sleep sí está en hora local); con UTC-6 no se solapa ninguno.
+  const LOCAL_TZ = "America/Mexico_City";
+  // Por debajo de esto son inicios accidentales del reloj (0.2-0.4 min, 0-1 kcal, sin zonas de FC).
+  const MIN_DURATION_MIN = 5;
+}
+
+with activities as (
+  -- stg_exercise_cycling tiene una fila por zona de FC; aquí se queda una por actividad.
+  select *
+  from ${ref("stg_exercise_cycling")}
+  qualify row_number() over (partition by exercise_log_id order by hr_zone_order) = 1
+),
+
+zones as (
+  -- Pivoteo por nombre y no por posición en el array. starts_with tolera el typo 'Fuera del rangoo' del origen.
+  select
+    exercise_log_id,
+    sum(if(starts_with(hr_zone_name, 'Fuera del rango'), hr_zone_minutes, null)) as out_of_range_min,
+    sum(if(hr_zone_name = 'Quema de grasas', hr_zone_minutes, null)) as fat_burn_min,
+    sum(if(hr_zone_name = 'Zona cardio', hr_zone_minutes, null)) as cardio_min,
+    sum(if(hr_zone_name = 'Pico', hr_zone_minutes, null)) as peak_min,
+    sum(hr_zone_minutes) as total_min
+  from ${ref("stg_exercise_cycling")}
+  where hr_zone_order is not null
+  group by exercise_log_id
+),
+
+cleaned as (
+  select
+    a.exercise_log_id,
+    a.activity_name,
+    case a.log_type
+      when 'tracker' then 'Manual'
+      when 'auto_detected' then 'Auto-detectado'
+    end as tracking_mode,
+
+    timestamp(a.start_at) as start_at_utc,
+    datetime(timestamp(a.start_at), '${LOCAL_TZ}') as start_at_local,
+    a.duration_ms,
+
+    a.duration_min,
+    a.active_duration_min,
+
+    -- Sin señal GPS el reloj reporta distancia y velocidad en 0: es "no medido", no "cero".
+    if(a.distance_km > 0, round(a.distance_km, 2), null) as distance_km,
+    if(a.distance_km > 0 and a.speed_kmh > 0, round(a.speed_kmh, 1), null) as avg_speed_kmh,
+    if(a.has_gps, round(a.elevation_gain_m, 1), null) as elevation_gain_m,
+    a.has_gps,
+
+    a.calories,
+    round(safe_divide(a.calories, a.active_duration_min), 2) as calories_per_min,
+    a.avg_heart_rate,
+
+    z.out_of_range_min as hr_zone_out_of_range_min,
+    z.fat_burn_min as hr_zone_fat_burn_min,
+    z.cardio_min as hr_zone_cardio_min,
+    z.peak_min as hr_zone_peak_min,
+    round(100 * safe_divide(z.out_of_range_min, z.total_min), 1) as hr_zone_out_of_range_pct,
+    round(100 * safe_divide(z.fat_burn_min, z.total_min), 1) as hr_zone_fat_burn_pct,
+    round(100 * safe_divide(z.cardio_min, z.total_min), 1) as hr_zone_cardio_pct,
+    round(100 * safe_divide(z.peak_min, z.total_min), 1) as hr_zone_peak_pct,
+
+    a.minutes_sedentary,
+    a.minutes_lightly,
+    a.minutes_fairly,
+    a.minutes_very,
+
+    -- azm_out_of_zone_minutes se omite: su multiplicador es 0 y siempre vale 0.
+    a.azm_total_minutes,
+    a.azm_fat_burn_minutes,
+    a.azm_cardio_minutes,
+    a.azm_peak_minutes
+
+  from activities a
+  left join zones z using (exercise_log_id)
+  where a.duration_min >= ${MIN_DURATION_MIN}
+)
+
+select
+  exercise_log_id,
+  activity_name,
+  tracking_mode,
+
+  start_at_utc,
+  start_at_local,
+  datetime_add(start_at_local, interval duration_ms millisecond) as end_at_local,
+  date(start_at_local) as start_date_local,
+  date_trunc(date(start_at_local), week(monday)) as start_week_local,
+  date_trunc(date(start_at_local), month) as start_month_local,
+  extract(hour from start_at_local) as start_hour_local,
+  -- extract(dayofweek) empieza en domingo = 1; se pasa a ISO (lunes = 1).
+  mod(extract(dayofweek from start_at_local) + 5, 7) + 1 as day_of_week_local,
+  ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'][offset(mod(extract(dayofweek from start_at_local) + 5, 7))] as day_name_local,
+  extract(dayofweek from start_at_local) in (1, 7) as is_weekend,
+  case
+    when extract(hour from start_at_local) < 6 then 'Madrugada'
+    when extract(hour from start_at_local) < 12 then 'Mañana'
+    when extract(hour from start_at_local) < 19 then 'Tarde'
+    else 'Noche'
+  end as time_of_day,
+
+  * except (exercise_log_id, activity_name, tracking_mode, start_at_utc, start_at_local, duration_ms),
+
+  current_timestamp() as loaded_at
+
+from cleaned
