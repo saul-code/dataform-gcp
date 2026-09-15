@@ -2,7 +2,7 @@ config {
   type: "table",
   schema: "bronze",
   name: "stg_cardio_load",
-  description: "Staging de la carga cardiovascular por minuto: una fila por minuto.",
+  description: "Staging de la carga cardiovascular por minuto: una fila por minuto. Cobertura parcial: el export solo trae minutos sueltos (~43 por día y 446 con carga de entrenamiento en 268 días), así que no sirve para totales diarios; para carga usar stg_cardio_acwr.",
   tags: ["staging", "health", "recovery"],
   assertions: {
     uniqueKey: ["measured_at"],

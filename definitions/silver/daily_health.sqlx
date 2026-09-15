@@ -1,0 +1,215 @@
+config {
+  type: "table",
+  schema: "silver",
+  name: "daily_health",
+  description: "Resumen diario de salud listo para dashboard: una fila por fecha local, sin huecos (los días sin datos quedan en NULL), con recuperación (readiness, HRV, FC en reposo, respiración, SpO2, ACWR), sueño principal, siestas, totales de ejercicio y promedios móviles de 7 días.",
+  tags: ["silver", "health", "daily"],
+  assertions: {
+    uniqueKey: ["date_local"],
+    nonNull: ["date_local", "has_sleep", "has_readiness", "exercise_sessions", "exercise_minutes"],
+    rowConditions: [
+      "readiness_score is null or readiness_score between 0 and 100",
+      "resting_heart_rate_bpm is null or resting_heart_rate_bpm between 30 and 120",
+      "spo2_avg_pct is null or spo2_avg_pct between 80 and 100",
+      "sleep_hours is null or sleep_hours between 0 and 16",
+      "exercise_minutes between 0 and 24 * 60"
+    ]
+  },
+  columns: {
+    date_local: "Fecha local. Para el sueño es la fecha de despertar.",
+    week_local: "Lunes de la semana local.",
+    month_local: "Primer día del mes local.",
+    day_of_week_local: "Día de la semana, ISO: 1 = lunes ... 7 = domingo.",
+    day_name_local: "Nombre del día de la semana en español.",
+    is_weekend: "TRUE si la fecha es sábado o domingo.",
+    has_sleep: "TRUE si hay sesión de sueño principal para la fecha.",
+    has_readiness: "TRUE si el reloj calculó readiness para la fecha.",
+
+    readiness_score: "Puntaje de readiness (0-100).",
+    readiness_level: "Nivel de readiness: 'Bajo', 'Medio' o 'Alto'.",
+    readiness_sleep_contribution: "Contribución del sueño al readiness: 'Muy baja' ... 'Muy alta'. NULL si el reloj no la calculó.",
+    readiness_hrv_contribution: "Contribución de la HRV al readiness: 'Muy baja' ... 'Muy alta'. NULL si el reloj no la calculó.",
+    readiness_rhr_contribution: "Contribución de la FC en reposo al readiness: 'Muy baja' ... 'Muy alta'. NULL si el reloj la ignoró.",
+
+    hrv_rmssd_ms: "Variabilidad de frecuencia cardiaca (RMSSD promedio de la noche, ms).",
+    hrv_deep_sleep_rmssd_ms: "RMSSD durante sueño profundo (ms).",
+    hrv_entropy: "Entropía de la señal de HRV.",
+    nrem_heart_rate_bpm: "Frecuencia cardiaca promedio en sueño no-REM (bpm).",
+    resting_heart_rate_bpm: "Frecuencia cardiaca en reposo (bpm, 1 decimal).",
+    breaths_per_minute: "Frecuencia respiratoria durante el sueño (respiraciones por minuto).",
+    spo2_avg_pct: "Saturación de oxígeno promedio de la noche (%).",
+    spo2_lower_bound_pct: "Límite inferior de SpO2 de la noche (%).",
+    spo2_upper_bound_pct: "Límite superior de SpO2 de la noche (%).",
+
+    acwr_ratio: "Ratio de carga aguda/crónica (2 decimales).",
+    acwr_status: "Estado de carga: 'Subentrenamiento' (< 0.7), 'Óptimo' (0.7-1.3) o 'Sobreentrenamiento' (> 1.3), según el reloj.",
+
+    sleep_score: "Puntaje de la sesión de sueño principal (0-100).",
+    sleep_score_label: "Categoría del puntaje: 'Excelente', 'Bueno', 'Regular' o 'Malo'.",
+    sleep_hours: "Horas dormido en la sesión principal.",
+    sleep_efficiency_pct: "Eficiencia de la sesión principal (%).",
+    sleep_deep_minutes: "Minutos de sueño profundo de la sesión principal.",
+    sleep_rem_minutes: "Minutos de sueño REM de la sesión principal.",
+    bedtime_hours_from_midnight: "Hora de dormir de la sesión principal, en horas relativas a la medianoche (23:30 = -0.5).",
+    wake_time_hours: "Hora de despertar de la sesión principal en horas decimales.",
+    nap_count: "Número de siestas con fecha de despertar ese día.",
+    nap_minutes: "Minutos dormido en siestas.",
+
+    exercise_sessions: "Número de sesiones de ejercicio que empezaron ese día (0 si ninguna).",
+    exercise_minutes: "Minutos totales de ejercicio (0 si ninguno).",
+    exercise_calories: "Calorías totales de ejercicio (0 si ninguno).",
+    azm_total_minutes: "Minutos de zona activa acumulados en ejercicio (0 si ninguno).",
+    cycling_sessions: "Sesiones de ciclismo (0 si ninguna).",
+    cycling_km: "Kilómetros en bici con distancia medida (0 si ninguno).",
+    walking_minutes: "Minutos de caminata (0 si ninguno).",
+
+    hrv_rmssd_7d_avg: "Promedio móvil de 7 días de hrv_rmssd_ms (ignora días sin dato).",
+    resting_heart_rate_7d_avg: "Promedio móvil de 7 días de resting_heart_rate_bpm.",
+    sleep_hours_7d_avg: "Promedio móvil de 7 días de sleep_hours.",
+    readiness_score_7d_avg: "Promedio móvil de 7 días de readiness_score.",
+    exercise_minutes_7d_sum: "Minutos de ejercicio acumulados en los últimos 7 días.",
+
+    loaded_at: "Timestamp en que se materializó esta fila en silver."
+  }
+}
+
+js {
+  // Escala categórica que usa el reloj en readiness. IGNORED y TYPE_UNSPECIFIED significan "no calculado".
+  function readinessLabel(column) {
+    return `case ${column}
+      when 'VERY_LOW' then 'Muy baja'
+      when 'LOW' then 'Baja'
+      when 'MEDIUM' then 'Media'
+      when 'HIGH' then 'Alta'
+      when 'VERY_HIGH' then 'Muy alta'
+    end`;
+  }
+}
+
+-- stg_daily_heart_rate_zones no entra aquí: son umbrales de bpm casi constantes, no una métrica diaria.
+-- Se usan en silver.exercise_track para clasificar la FC por segundo.
+-- stg_cardio_load tampoco: el export solo trae minutos sueltos (446 con carga de entrenamiento en 268 días),
+-- así que su suma diaria sale en 0 aun en días con varios recorridos. La carga confiable es acwr_ratio.
+with bounds as (
+  select min(d) as min_date, max(d) as max_date
+  from (
+    select sleep_date as d from ${ref("sleep_sessions")}
+    union all select readiness_date from ${ref("stg_daily_readiness")}
+    union all select hrv_date from ${ref("stg_daily_hrv")}
+    union all select start_date_local from ${ref("exercise_sessions")}
+  )
+),
+
+calendar_days as (
+  select date_local
+  from bounds, unnest(generate_date_array(min_date, max_date)) as date_local
+),
+
+main_sleep as (
+  select *
+  from ${ref("sleep_sessions")}
+  where is_main_sleep
+),
+
+naps as (
+  select sleep_date, count(*) as nap_count, sum(minutes_asleep) as nap_minutes
+  from ${ref("sleep_sessions")}
+  where not is_main_sleep
+  group by sleep_date
+),
+
+exercise as (
+  select
+    start_date_local,
+    count(*) as sessions,
+    sum(duration_min) as minutes,
+    sum(calories) as calories,
+    sum(azm_total_minutes) as azm_total_minutes,
+    countif(activity_group = 'Ciclismo') as cycling_sessions,
+    sum(if(activity_group = 'Ciclismo', distance_km, null)) as cycling_km,
+    sum(if(activity_group = 'Caminata', duration_min, null)) as walking_minutes
+  from ${ref("exercise_sessions")}
+  group by start_date_local
+),
+
+daily as (
+  select
+    c.date_local,
+    ms.sleep_log_id is not null as has_sleep,
+    r.readiness_date is not null as has_readiness,
+
+    r.readiness_score,
+    case r.readiness_level
+      when 'LOW' then 'Bajo'
+      when 'MEDIUM' then 'Medio'
+      when 'HIGH' then 'Alto'
+    end as readiness_level,
+    ${readinessLabel("r.sleep_readiness")} as readiness_sleep_contribution,
+    ${readinessLabel("r.hrv_readiness")} as readiness_hrv_contribution,
+    ${readinessLabel("r.rhr_readiness")} as readiness_rhr_contribution,
+
+    h.avg_rmssd_ms as hrv_rmssd_ms,
+    h.deep_sleep_rmssd_ms as hrv_deep_sleep_rmssd_ms,
+    round(h.entropy, 3) as hrv_entropy,
+    h.nrem_heart_rate_bpm,
+    round(rhr.resting_heart_rate_bpm, 1) as resting_heart_rate_bpm,
+    rr.breaths_per_minute,
+    sp.avg_pct as spo2_avg_pct,
+    sp.lower_bound_pct as spo2_lower_bound_pct,
+    sp.upper_bound_pct as spo2_upper_bound_pct,
+
+    round(a.acwr_ratio, 2) as acwr_ratio,
+    case a.acwr_label
+      when 'UNDER_TRAINING' then 'Subentrenamiento'
+      when 'OPTIMAL_TRAINING' then 'Óptimo'
+      when 'OVER_TRAINING' then 'Sobreentrenamiento'
+    end as acwr_status,
+
+    ms.sleep_score,
+    ms.sleep_score_label,
+    ms.hours_asleep as sleep_hours,
+    ms.efficiency_pct as sleep_efficiency_pct,
+    ms.deep_minutes as sleep_deep_minutes,
+    ms.rem_minutes as sleep_rem_minutes,
+    ms.bedtime_hours_from_midnight,
+    ms.wake_time_hours,
+    coalesce(n.nap_count, 0) as nap_count,
+    coalesce(n.nap_minutes, 0) as nap_minutes,
+
+    -- Un día sin ejercicio es 0 real (el reloj se usa a diario), no un dato faltante.
+    coalesce(e.sessions, 0) as exercise_sessions,
+    round(coalesce(e.minutes, 0), 1) as exercise_minutes,
+    coalesce(e.calories, 0) as exercise_calories,
+    coalesce(e.azm_total_minutes, 0) as azm_total_minutes,
+    coalesce(e.cycling_sessions, 0) as cycling_sessions,
+    round(coalesce(e.cycling_km, 0), 2) as cycling_km,
+    round(coalesce(e.walking_minutes, 0), 1) as walking_minutes
+
+  from calendar_days c
+  left join main_sleep ms on ms.sleep_date = c.date_local
+  left join naps n on n.sleep_date = c.date_local
+  left join ${ref("stg_daily_readiness")} r on r.readiness_date = c.date_local
+  left join ${ref("stg_daily_hrv")} h on h.hrv_date = c.date_local
+  left join ${ref("stg_daily_resting_heart_rate")} rhr on rhr.rhr_date = c.date_local
+  left join ${ref("stg_daily_respiratory_rate")} rr on rr.respiratory_date = c.date_local
+  left join ${ref("stg_daily_spo2")} sp on sp.spo2_date = c.date_local
+  left join ${ref("stg_cardio_acwr")} a on a.acwr_date = c.date_local
+  left join exercise e on e.start_date_local = c.date_local
+)
+
+select
+  date_local,
+  ${calendar.dateColumns("date_local", "week_local", "month_local")},
+  * except (date_local),
+
+  -- La serie no tiene huecos de fecha, así que 6 filas previas = 7 días calendario.
+  round(avg(hrv_rmssd_ms) over last_7d, 1) as hrv_rmssd_7d_avg,
+  round(avg(resting_heart_rate_bpm) over last_7d, 1) as resting_heart_rate_7d_avg,
+  round(avg(sleep_hours) over last_7d, 2) as sleep_hours_7d_avg,
+  round(avg(readiness_score) over last_7d, 1) as readiness_score_7d_avg,
+  round(sum(exercise_minutes) over last_7d, 1) as exercise_minutes_7d_sum,
+
+  current_timestamp() as loaded_at
+
+from daily
+window last_7d as (order by date_local rows between 6 preceding and current row)

@@ -1,0 +1,123 @@
+config {
+  type: "table",
+  schema: "silver",
+  name: "sleep_sessions",
+  description: "Sesiones de sueño limpias y listas para visualización: una fila por sesión (principal o siesta), con el puntaje de stg_sleep_score unido por id, fases como minutos y porcentaje, hora de dormir en un eje continuo y columnas siempre vacías o sin sentido descartadas.",
+  tags: ["silver", "health", "sleep"],
+  assertions: {
+    uniqueKey: ["sleep_log_id"],
+    nonNull: ["sleep_log_id", "sleep_date", "start_at_local", "end_at_local", "is_main_sleep", "minutes_asleep"],
+    rowConditions: [
+      "end_at_local > start_at_local",
+      "minutes_asleep <= time_in_bed_min",
+      "efficiency_pct between 0 and 100",
+      "sleep_score is null or sleep_score between 0 and 100",
+      "not has_stages or abs(deep_pct + light_pct + rem_pct - 100) <= 0.2"
+    ]
+  },
+  columns: {
+    sleep_log_id: "Identificador único de la sesión de sueño (logId).",
+    sleep_date: "Fecha de despertar (dateOfSleep del reloj). Es la fecha con la que se une a las métricas diarias.",
+    sleep_week: "Lunes de la semana de sleep_date.",
+    sleep_month: "Primer día del mes de sleep_date.",
+    day_of_week_local: "Día de la semana de sleep_date, ISO: 1 = lunes ... 7 = domingo.",
+    day_name_local: "Nombre del día de la semana de sleep_date en español.",
+    is_weekend: "TRUE si sleep_date es sábado o domingo.",
+    is_main_sleep: "TRUE si es la sesión principal del día (hay exactamente una por fecha).",
+    sleep_kind: "'Principal' o 'Siesta'.",
+    start_at_local: "Inicio de la sesión en hora local (DATETIME). El export de sueño ya viene en hora local.",
+    end_at_local: "Fin de la sesión en hora local (DATETIME).",
+    bedtime_hours_from_midnight: "Hora de dormir como horas relativas a la medianoche más cercana (23:30 = -0.5, 01:15 = 1.25), para graficar sin que el eje se rompa al cruzar el día. Pensado para sesiones principales.",
+    wake_time_hours: "Hora de despertar en horas decimales (07:30 = 7.5).",
+    time_in_bed_min: "Minutos totales en cama.",
+    minutes_asleep: "Minutos dormido.",
+    hours_asleep: "Horas dormido (minutes_asleep / 60).",
+    minutes_awake: "Minutos despierto dentro de la sesión.",
+    minutes_to_fall_asleep: "Minutos que tardó en quedarse dormido.",
+    minutes_after_wakeup: "Minutos en cama después de despertar.",
+    efficiency_pct: "Eficiencia del sueño reportada por el reloj (%).",
+    has_stages: "TRUE si la sesión trae fases (deep/light/rem). Las sesiones 'classic' (cortas, casi siempre siestas) solo traen dormido/inquieto/despierto.",
+    deep_minutes: "Minutos en sueño profundo. NULL sin fases.",
+    light_minutes: "Minutos en sueño ligero. NULL sin fases.",
+    rem_minutes: "Minutos en sueño REM. NULL sin fases.",
+    deep_pct: "% del sueño (profundo + ligero + REM) en profundo.",
+    light_pct: "% del sueño en ligero.",
+    rem_pct: "% del sueño en REM.",
+    deep_avg_30d_minutes: "Promedio de 30 días de sueño profundo según el reloj. NULL cuando el reloj aún no tenía historial (el origen reporta 0).",
+    light_avg_30d_minutes: "Promedio de 30 días de sueño ligero según el reloj. NULL sin historial.",
+    rem_avg_30d_minutes: "Promedio de 30 días de sueño REM según el reloj. NULL sin historial.",
+    restless_minutes: "Minutos inquieto (solo sesiones sin fases).",
+    sleep_score: "Puntaje general de sueño (0-100). NULL si el reloj no puntuó la sesión (siestas).",
+    sleep_score_label: "Categoría del puntaje con los rangos de Fitbit: 'Excelente' (90-100), 'Bueno' (80-89), 'Regular' (60-79), 'Malo' (< 60).",
+    revitalization_score: "Puntaje de revitalización.",
+    resting_heart_rate_bpm: "Frecuencia cardiaca en reposo durante la sesión (bpm).",
+    restlessness: "Índice de inquietud durante la sesión (fracción 0-1).",
+    loaded_at: "Timestamp en que se materializó esta fila en silver."
+  }
+}
+
+-- Se omiten de stg_sleep_score composition_score y duration_score (100 % NULL en el export) y deep_sleep_minutes
+-- (duplica deep_minutes). La unión es por id y no por fecha porque hay días con siesta y sesión principal.
+-- Los *_count de fases y los arrays se omiten aquí; el detalle por fase vive en silver.sleep_stages.
+with sleeps as (
+  select
+    s.*,
+    coalesce(s.deep_minutes, 0) + coalesce(s.light_minutes, 0) + coalesce(s.rem_minutes, 0) as staged_minutes
+  from ${ref("stg_sleep")} s
+)
+
+select
+  s.sleep_log_id,
+  s.sleep_date,
+  ${calendar.dateColumns("s.sleep_date", "sleep_week", "sleep_month")},
+  s.is_main_sleep,
+  if(s.is_main_sleep, 'Principal', 'Siesta') as sleep_kind,
+
+  s.start_at as start_at_local,
+  s.end_at as end_at_local,
+  round(
+    datetime_diff(
+      s.start_at,
+      datetime(date_add(date(s.start_at), interval if(extract(hour from s.start_at) >= 12, 1, 0) day)),
+      second
+    ) / 3600,
+    2
+  ) as bedtime_hours_from_midnight,
+  round(datetime_diff(s.end_at, datetime(date(s.end_at)), second) / 3600, 2) as wake_time_hours,
+
+  s.time_in_bed_min,
+  s.minutes_asleep,
+  round(s.minutes_asleep / 60, 2) as hours_asleep,
+  s.minutes_awake,
+  s.minutes_to_fall_asleep,
+  s.minutes_after_wakeup,
+  s.efficiency_pct,
+
+  s.sleep_type = 'stages' as has_stages,
+  s.deep_minutes,
+  s.light_minutes,
+  s.rem_minutes,
+  round(100 * safe_divide(s.deep_minutes, s.staged_minutes), 1) as deep_pct,
+  round(100 * safe_divide(s.light_minutes, s.staged_minutes), 1) as light_pct,
+  round(100 * safe_divide(s.rem_minutes, s.staged_minutes), 1) as rem_pct,
+  nullif(s.deep_avg_30d_minutes, 0) as deep_avg_30d_minutes,
+  nullif(s.light_avg_30d_minutes, 0) as light_avg_30d_minutes,
+  nullif(s.rem_avg_30d_minutes, 0) as rem_avg_30d_minutes,
+  s.restless_minutes,
+
+  sc.overall_score as sleep_score,
+  case
+    when sc.overall_score >= 90 then 'Excelente'
+    when sc.overall_score >= 80 then 'Bueno'
+    when sc.overall_score >= 60 then 'Regular'
+    when sc.overall_score is not null then 'Malo'
+  end as sleep_score_label,
+  sc.revitalization_score,
+  sc.resting_heart_rate_bpm,
+  round(sc.restlessness, 3) as restlessness,
+
+  current_timestamp() as loaded_at
+
+from sleeps s
+left join ${ref("stg_sleep_score")} sc
+  on sc.sleep_log_entry_id = cast(s.sleep_log_id as string)

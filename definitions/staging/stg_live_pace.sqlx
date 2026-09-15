@@ -10,9 +10,9 @@ config {
   },
   columns: {
     recorded_at: "Segundo de la medición de ritmo (TIMESTAMP, UTC).",
-    steps: "Pasos acumulados al momento de la medición.",
-    distance_m: "Distancia acumulada en metros.",
-    altitude_gain_m: "Ganancia de altitud acumulada en metros.",
+    steps: "Pasos dados en ese segundo (no acumulados; máximo observado 6).",
+    distance_m: "Metros recorridos en ese segundo (no acumulados). 3.6 * distance_m da la velocidad instantánea en km/h.",
+    altitude_gain_m: "Cambio de altitud en ese segundo, en metros, con signo (negativo al bajar; no acumulado).",
     data_source: "Fuente del dato (app o dispositivo).",
     source_year: "Año de partición de origen en bronze (linaje).",
     source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",

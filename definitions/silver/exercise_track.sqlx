@@ -1,0 +1,154 @@
+config {
+  type: "table",
+  schema: "silver",
+  name: "exercise_track",
+  description: "Serie por segundo de cada sesión de ejercicio para mapas de ruta y curvas: une frecuencia cardiaca, GPS y ritmo en vivo por segundo, recortada a la ventana real de la sesión, con distancia acumulada, velocidad suavizada y zona de FC según los umbrales del día.",
+  tags: ["silver", "health", "exercise"],
+  bigquery: {
+    clusterBy: ["exercise_id"]
+  },
+  assertions: {
+    uniqueKey: ["exercise_id", "recorded_at_utc"],
+    nonNull: ["exercise_id", "exercise_log_id", "recorded_at_utc", "recorded_at_local", "elapsed_sec"],
+    rowConditions: [
+      "elapsed_sec >= 0",
+      "heart_rate_bpm is null or heart_rate_bpm between 30 and 230",
+      "(latitude is null) = (longitude is null)",
+      "speed_kmh is null or speed_kmh between 0 and 100"
+    ]
+  },
+  columns: {
+    exercise_id: "Identificador de la sesión (stg_exercise_details); une con silver.exercise_sessions.",
+    exercise_log_id: "Identificador de la actividad en silver.exercise_sessions.",
+    activity_group: "Agrupación de la actividad: 'Ciclismo', 'Caminata', 'Carrera', 'Natación' u 'Otro'.",
+    start_date_local: "Fecha local de inicio de la sesión, para filtrar en el dashboard.",
+    recorded_at_utc: "Segundo de la medición (TIMESTAMP, UTC).",
+    recorded_at_local: "Segundo de la medición en hora local (DATETIME), con el utc_offset de la sesión.",
+    elapsed_sec: "Segundos transcurridos desde el inicio de la sesión.",
+    elapsed_min: "Minutos transcurridos desde el inicio de la sesión (1 decimal), para el eje X.",
+    heart_rate_bpm: "Frecuencia cardiaca en ese segundo. NULL si el reloj no registró ese segundo.",
+    hr_zone: "Zona de FC del segundo según los umbrales del día (stg_daily_heart_rate_zones): 'Ligera', 'Moderada', 'Vigorosa', 'Pico' o 'Bajo ligera'.",
+    latitude: "Latitud. NULL sin GPS en ese segundo.",
+    longitude: "Longitud. NULL sin GPS en ese segundo.",
+    altitude_m: "Altitud en metros según GPS.",
+    distance_m: "Metros recorridos en ese segundo (live pace). NULL si no hubo medición.",
+    cumulative_distance_km: "Kilómetros acumulados desde el inicio de la sesión.",
+    speed_kmh: "Velocidad en km/h suavizada con la media de los últimos 10 segundos (la señal por segundo es muy ruidosa).",
+    altitude_gain_m: "Ganancia de altitud en ese segundo (live pace), en metros.",
+    loaded_at: "Timestamp en que se materializó esta fila en silver."
+  }
+}
+
+js {
+  const SPEED_SMOOTHING_SEC = 10;
+}
+
+-- Solo sesiones que sobrevivieron la limpieza de silver.exercise_sessions (sin basura < 5 min ni auto-detecciones
+-- duplicadas) y que tienen detalle, porque ahí están el exercise_id y la ventana real en UTC.
+-- El fin se toma de exercise_sessions: en 2 sesiones stg_exercise_details es la única duración confiable.
+with sessions as (
+  select
+    es.exercise_id,
+    es.exercise_log_id,
+    es.activity_group,
+    es.start_date_local,
+    es.start_at_utc,
+    timestamp_add(es.start_at_utc, interval cast(es.duration_min * 60 as int64) second) as end_at_utc,
+    coalesce(es.utc_offset, '${calendar.LOCAL_TZ}') as tz
+  from ${ref("exercise_sessions")} es
+  where es.exercise_id is not null
+),
+
+-- La FC sigue grabando hasta 10 min después del fin de la sesión; se recorta a la ventana.
+heart_rate as (
+  select h.exercise_id, h.recorded_at, h.heart_rate_bpm
+  from ${ref("stg_heart_rate_exercise")} h
+  join sessions s
+    on s.exercise_id = h.exercise_id
+    and h.recorded_at between s.start_at_utc and s.end_at_utc
+),
+
+-- GPS y ritmo no traen exercise_id: se asignan por ventana de tiempo.
+gps as (
+  select s.exercise_id, g.recorded_at, g.latitude, g.longitude, g.altitude_m
+  from ${ref("stg_gps_location")} g
+  join sessions s
+    on g.recorded_at between s.start_at_utc and s.end_at_utc
+),
+
+pace as (
+  select s.exercise_id, p.recorded_at, p.distance_m, p.altitude_gain_m
+  from ${ref("stg_live_pace")} p
+  join sessions s
+    on p.recorded_at between s.start_at_utc and s.end_at_utc
+),
+
+seconds as (
+  select exercise_id, recorded_at from heart_rate
+  union distinct
+  select exercise_id, recorded_at from gps
+  union distinct
+  select exercise_id, recorded_at from pace
+),
+
+track as (
+  select
+    s.exercise_id,
+    s.exercise_log_id,
+    s.activity_group,
+    s.start_date_local,
+    sec.recorded_at as recorded_at_utc,
+    datetime(sec.recorded_at, s.tz) as recorded_at_local,
+    timestamp_diff(sec.recorded_at, s.start_at_utc, second) as elapsed_sec,
+
+    h.heart_rate_bpm,
+    case
+      when h.heart_rate_bpm is null then null
+      when h.heart_rate_bpm >= z.peak_min_bpm then 'Pico'
+      when h.heart_rate_bpm >= z.vigorous_min_bpm then 'Vigorosa'
+      when h.heart_rate_bpm >= z.moderate_min_bpm then 'Moderada'
+      when h.heart_rate_bpm >= z.light_min_bpm then 'Ligera'
+      when z.light_min_bpm is not null then 'Bajo ligera'
+    end as hr_zone,
+
+    g.latitude,
+    g.longitude,
+    round(g.altitude_m, 1) as altitude_m,
+
+    p.distance_m,
+    p.altitude_gain_m
+
+  from seconds sec
+  join sessions s using (exercise_id)
+  left join heart_rate h using (exercise_id, recorded_at)
+  left join gps g using (exercise_id, recorded_at)
+  left join pace p using (exercise_id, recorded_at)
+  left join ${ref("stg_daily_heart_rate_zones")} z
+    on z.zones_date = s.start_date_local
+)
+
+select
+  exercise_id,
+  exercise_log_id,
+  activity_group,
+  start_date_local,
+  recorded_at_utc,
+  recorded_at_local,
+  elapsed_sec,
+  round(elapsed_sec / 60, 1) as elapsed_min,
+
+  heart_rate_bpm,
+  hr_zone,
+
+  latitude,
+  longitude,
+  altitude_m,
+
+  distance_m,
+  round(sum(coalesce(distance_m, 0)) over (partition by exercise_id order by elapsed_sec) / 1000, 3) as cumulative_distance_km,
+  round(3.6 * avg(distance_m) over (partition by exercise_id order by elapsed_sec range between ${SPEED_SMOOTHING_SEC - 1} preceding and current row), 1) as speed_kmh,
+  altitude_gain_m,
+
+  current_timestamp() as loaded_at
+
+from track

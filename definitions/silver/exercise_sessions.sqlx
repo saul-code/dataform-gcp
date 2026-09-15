@@ -1,0 +1,221 @@
+config {
+  type: "table",
+  schema: "silver",
+  name: "exercise_sessions",
+  description: "Sesiones de ejercicio de todas las actividades, limpias y listas para visualización: una fila por actividad, stg_exercise enriquecido con stg_exercise_details, horarios en hora local, métricas sin medición en NULL (no en 0), duraciones corruptas corregidas, sesiones basura (< 5 min) y auto-detecciones duplicadas dentro de una sesión manual descartadas.",
+  tags: ["silver", "health", "exercise"],
+  assertions: {
+    uniqueKey: ["exercise_log_id"],
+    nonNull: ["exercise_log_id", "activity_name", "activity_group", "tracking_mode", "start_at_utc", "start_at_local", "start_date_local", "duration_min", "calories"],
+    rowConditions: [
+      "duration_min between 5 and 300",
+      "distance_km is null or distance_km > 0",
+      "avg_heart_rate is null or avg_heart_rate between 40 and 220",
+      "peak_heart_rate is null or peak_heart_rate between 40 and 230",
+      "is_duration_corrected or abs(coalesce(hr_zone_out_of_range_min, 0) + coalesce(hr_zone_fat_burn_min, 0) + coalesce(hr_zone_cardio_min, 0) + coalesce(hr_zone_peak_min, 0) - duration_min) <= 5 or hr_zone_out_of_range_min is null"
+    ]
+  },
+  columns: {
+    exercise_log_id: "Identificador único de la actividad (logId de stg_exercise).",
+    exercise_id: "Identificador de la sesión en stg_exercise_details; llave para unir con silver.exercise_track. NULL en las 21 actividades sin detalle (natación y bici auto-detectada de abr-jun 2026).",
+    activity_name: "Nombre de la actividad tal como la reporta el reloj ('Caminar', 'Ciclismo', 'Natación', ...).",
+    activity_group: "Agrupación para el dashboard: 'Ciclismo', 'Caminata', 'Carrera', 'Natación' u 'Otro'.",
+    tracking_mode: "Cómo se registró: 'Manual' (log_type = 'tracker') o 'Auto-detectado' (log_type = 'auto_detected').",
+    start_at_utc: "Inicio de la actividad (TIMESTAMP, UTC).",
+    start_at_local: "Inicio en hora local (DATETIME), con el utc_offset del detalle o America/Mexico_City si no hay detalle.",
+    end_at_local: "Fin en hora local (DATETIME), calculado como inicio + duration_min.",
+    utc_offset: "Offset UTC del dispositivo durante la actividad ('-06:00', o '-05:00' en un viaje de feb-2026). NULL sin detalle.",
+    start_date_local: "Fecha local de la actividad.",
+    start_week_local: "Lunes de la semana local, para agrupar por semana.",
+    start_month_local: "Primer día del mes local, para agrupar por mes.",
+    start_hour_local: "Hora local de inicio (0-23).",
+    day_of_week_local: "Día de la semana local, ISO: 1 = lunes ... 7 = domingo.",
+    day_name_local: "Nombre del día de la semana local en español.",
+    is_weekend: "TRUE si la actividad empezó en sábado o domingo (hora local).",
+    time_of_day: "Franja del día de inicio: 'Madrugada' (0-5), 'Mañana' (6-11), 'Tarde' (12-18), 'Noche' (19-23).",
+    duration_min: "Duración total en minutos.",
+    active_duration_min: "Duración activa en minutos.",
+    is_duration_corrected: "TRUE si stg_exercise traía una duración imposible (> 300 min) y se reemplazó por la de stg_exercise_details. En esas filas las zonas de FC van en NULL porque también venían corruptas.",
+    distance_km: "Distancia en km. NULL si no se midió (el origen reporta 0).",
+    avg_speed_kmh: "Velocidad promedio en km/h. NULL cuando no hay distancia.",
+    peak_speed_kmh: "Velocidad pico en km/h (de stg_exercise_details). NULL si no se midió.",
+    avg_pace_min_per_km: "Ritmo promedio en min/km, solo para 'Carrera' y 'Caminata' con velocidad medida.",
+    elevation_gain_m: "Ganancia de elevación en metros. NULL sin GPS.",
+    has_gps: "Indica si la actividad tiene datos de GPS.",
+    steps: "Pasos de la actividad. NULL si no se midieron (el origen reporta 0, p. ej. en bici).",
+    calories: "Calorías totales de la actividad (se puede sumar).",
+    calories_per_min: "Calorías por minuto activo.",
+    avg_heart_rate: "Frecuencia cardiaca promedio.",
+    peak_heart_rate: "Frecuencia cardiaca pico (de stg_exercise_details). NULL si no se midió.",
+    hr_zone_out_of_range_min: "Minutos fuera de rango de FC (por debajo de quema de grasas).",
+    hr_zone_fat_burn_min: "Minutos en zona de FC de quema de grasas.",
+    hr_zone_cardio_min: "Minutos en zona de FC cardio.",
+    hr_zone_peak_min: "Minutos en zona de FC pico.",
+    minutes_sedentary: "Minutos en nivel de actividad sedentario.",
+    minutes_lightly: "Minutos en nivel de actividad ligero.",
+    minutes_fairly: "Minutos en nivel de actividad moderado.",
+    minutes_very: "Minutos en nivel de actividad intenso.",
+    azm_total_minutes: "Minutos totales de zona activa (Active Zone Minutes).",
+    azm_fat_burn_minutes: "Minutos de zona activa de quema de grasas.",
+    azm_cardio_minutes: "Minutos de zona activa cardio (cuentan doble en azm_total_minutes).",
+    azm_peak_minutes: "Minutos de zona activa pico (cuentan doble en azm_total_minutes).",
+    loaded_at: "Timestamp en que se materializó esta fila en silver."
+  }
+}
+
+js {
+  const MIN_DURATION_MIN = 5;
+  // En 2 sesiones (caminadora de 7,397 min y entrenamiento de 524 min) stg_exercise trae la duración y las
+  // zonas de FC corruptas; stg_exercise_details sí tiene la duración real (14.6 y 31 min).
+  const MAX_PLAUSIBLE_DURATION_MIN = 300;
+}
+
+with joined as (
+  select
+    e.*,
+    d.exercise_id,
+    d.utc_offset,
+    d.duration_min as details_duration_min,
+    d.peak_heart_rate,
+    d.peak_speed_kmh,
+    -- Las zonas se pivotean por nombre y no por posición. starts_with tolera el typo 'Fuera del rangoo' del origen.
+    (select sum(z.minutes) from unnest(e.heart_rate_zones) z where starts_with(z.zone_name, 'Fuera del rango')) as out_of_range_min,
+    (select sum(z.minutes) from unnest(e.heart_rate_zones) z where z.zone_name = 'Quema de grasas') as fat_burn_min,
+    (select sum(z.minutes) from unnest(e.heart_rate_zones) z where z.zone_name = 'Zona cardio') as cardio_min,
+    (select sum(z.minutes) from unnest(e.heart_rate_zones) z where z.zone_name = 'Pico') as peak_min
+  from ${ref("stg_exercise")} e
+  -- No comparten id: se empatan por inicio exacto. stg_exercise.start_at viene en UTC aunque no traiga zona.
+  left join ${ref("stg_exercise_details")} d
+    on datetime(d.start_at_utc) = e.start_at
+),
+
+cleaned as (
+  select
+    *,
+    datetime(start_at_utc, coalesce(utc_offset, '${calendar.LOCAL_TZ}')) as start_at_local,
+    timestamp_add(start_at_utc, interval cast(duration_min * 60 as int64) second) as end_at_utc
+  from (
+    select
+      exercise_log_id,
+      exercise_id,
+      activity_name,
+      case
+        when activity_name in ('Ciclismo', 'Bicicleta en exteriores', 'Spinning') then 'Ciclismo'
+        when activity_name in ('Caminar', 'Senderismo') then 'Caminata'
+        when activity_name in ('Correr', 'Carrera en Cinta') then 'Carrera'
+        when activity_name = 'Natación' then 'Natación'
+        else 'Otro'
+      end as activity_group,
+      case log_type
+        when 'tracker' then 'Manual'
+        when 'auto_detected' then 'Auto-detectado'
+      end as tracking_mode,
+
+      timestamp(start_at) as start_at_utc,
+      utc_offset,
+
+      duration_min > ${MAX_PLAUSIBLE_DURATION_MIN} and details_duration_min is not null as is_duration_corrected,
+      if(duration_min > ${MAX_PLAUSIBLE_DURATION_MIN}, details_duration_min, duration_min) as duration_min,
+      if(duration_min > ${MAX_PLAUSIBLE_DURATION_MIN}, details_duration_min, active_duration_min) as active_duration_min,
+
+      -- Sin señal GPS el reloj reporta distancia y velocidad en 0: es "no medido", no "cero".
+      if(distance_km > 0, round(distance_km, 2), null) as distance_km,
+      if(distance_km > 0 and speed_kmh > 0, round(speed_kmh, 1), null) as avg_speed_kmh,
+      round(peak_speed_kmh, 1) as peak_speed_kmh,
+      if(has_gps, round(elevation_gain_m, 1), null) as elevation_gain_m,
+      has_gps,
+      nullif(steps, 0) as steps,
+
+      calories,
+      avg_heart_rate,
+      peak_heart_rate,
+
+      if(duration_min > ${MAX_PLAUSIBLE_DURATION_MIN}, null, out_of_range_min) as hr_zone_out_of_range_min,
+      if(duration_min > ${MAX_PLAUSIBLE_DURATION_MIN}, null, fat_burn_min) as hr_zone_fat_burn_min,
+      if(duration_min > ${MAX_PLAUSIBLE_DURATION_MIN}, null, cardio_min) as hr_zone_cardio_min,
+      if(duration_min > ${MAX_PLAUSIBLE_DURATION_MIN}, null, peak_min) as hr_zone_peak_min,
+
+      minutes_sedentary,
+      minutes_lightly,
+      minutes_fairly,
+      minutes_very,
+
+      -- azm_out_of_zone_minutes se omite: su multiplicador es 0 y siempre vale 0.
+      azm_total_minutes,
+      azm_fat_burn_minutes,
+      azm_cardio_minutes,
+      azm_peak_minutes
+
+    from joined
+  )
+),
+
+deduped as (
+  -- El reloj a veces auto-detecta una caminata dentro de una sesión manual (4 casos): se descarta la
+  -- auto-detectada para no contar dos veces minutos y calorías en los totales diarios.
+  select a.*
+  from cleaned a
+  where a.duration_min >= ${MIN_DURATION_MIN}
+    and not exists (
+      select 1
+      from cleaned b
+      where a.tracking_mode = 'Auto-detectado'
+        and b.tracking_mode = 'Manual'
+        and b.duration_min >= ${MIN_DURATION_MIN}
+        and a.start_at_utc < b.end_at_utc
+        and b.start_at_utc < a.end_at_utc
+    )
+)
+
+select
+  exercise_log_id,
+  exercise_id,
+  activity_name,
+  activity_group,
+  tracking_mode,
+
+  start_at_utc,
+  start_at_local,
+  datetime_add(start_at_local, interval cast(duration_min * 60 as int64) second) as end_at_local,
+  utc_offset,
+  date(start_at_local) as start_date_local,
+  ${calendar.dateColumns("date(start_at_local)", "start_week_local", "start_month_local")},
+  extract(hour from start_at_local) as start_hour_local,
+  ${calendar.timeOfDay("start_at_local")} as time_of_day,
+
+  duration_min,
+  active_duration_min,
+  is_duration_corrected,
+
+  distance_km,
+  avg_speed_kmh,
+  peak_speed_kmh,
+  if(activity_group in ('Carrera', 'Caminata'), round(safe_divide(60, avg_speed_kmh), 2), null) as avg_pace_min_per_km,
+  elevation_gain_m,
+  has_gps,
+  steps,
+
+  calories,
+  round(safe_divide(calories, active_duration_min), 2) as calories_per_min,
+  avg_heart_rate,
+  peak_heart_rate,
+
+  hr_zone_out_of_range_min,
+  hr_zone_fat_burn_min,
+  hr_zone_cardio_min,
+  hr_zone_peak_min,
+
+  minutes_sedentary,
+  minutes_lightly,
+  minutes_fairly,
+  minutes_very,
+
+  azm_total_minutes,
+  azm_fat_burn_minutes,
+  azm_cardio_minutes,
+  azm_peak_minutes,
+
+  current_timestamp() as loaded_at
+
+from deduped
+where duration_min <= ${MAX_PLAUSIBLE_DURATION_MIN}

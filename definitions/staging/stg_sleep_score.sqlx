@@ -6,12 +6,12 @@ config {
   tags: ["staging", "health", "sleep"],
   assertions: {
     uniqueKey: ["sleep_log_entry_id"],
-    nonNull: ["sleep_log_entry_id", "scored_at", "wake_date_local"]
+    nonNull: ["sleep_log_entry_id", "scored_at_local", "wake_date_local"]
   },
   columns: {
-    sleep_log_entry_id: "Identificador único del registro de sueño puntuado.",
-    scored_at: "Momento en que se calculó el puntaje / hora de despertar (TIMESTAMP, UTC).",
-    wake_date_local: "Fecha de despertar en hora local (America/Mexico_City).",
+    sleep_log_entry_id: "Identificador único del registro de sueño puntuado; une con stg_sleep.sleep_log_id (casteado a STRING).",
+    scored_at_local: "Hora de despertar en hora local del dispositivo (DATETIME). Coincide con stg_sleep.end_at.",
+    wake_date_local: "Fecha de despertar en hora local. Coincide con stg_sleep.sleep_date.",
     overall_score: "Puntaje general de sueño.",
     composition_score: "Puntaje de composición del sueño (fases).",
     revitalization_score: "Puntaje de revitalización.",
@@ -25,12 +25,13 @@ config {
   }
 }
 
--- Nota: timestamp es la hora de despertar en UTC; wake_date_local convierte
--- a America/Mexico_City para obtener la fecha de despertar correcta.
+-- Nota: aunque timestamp trae sufijo 'Z', es la hora de despertar en hora LOCAL: coincide exacto con
+-- stg_sleep.end_at (que ya es local). Convertirlo de UTC a America/Mexico_City corría 11 fechas un día
+-- atrás, así que se conserva la hora de reloj tal cual.
 select
   sleep_log_entry_id,
-  timestamp(timestamp) as scored_at,
-  date(timestamp(timestamp), 'America/Mexico_City') as wake_date_local,
+  datetime(timestamp(timestamp)) as scored_at_local,
+  date(timestamp(timestamp)) as wake_date_local,
   overall_score,
   -- Siempre nulos en el export actual, por eso bronze los tipa como STRING; se castean
   -- para que no cambie el tipo de la columna cuando empiecen a llegar valores.
