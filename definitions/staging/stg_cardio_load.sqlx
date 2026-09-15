@@ -1,0 +1,37 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_cardio_load",
+  description: "Staging de la carga cardiovascular por minuto: una fila por minuto.",
+  tags: ["staging", "health", "recovery"],
+  assertions: {
+    uniqueKey: ["measured_at"],
+    nonNull: ["measured_at"]
+  },
+  columns: {
+    measured_at: "Minuto de la medición de carga cardiovascular (TIMESTAMP, UTC).",
+    workout_load: "Carga cardiovascular atribuida a entrenamiento.",
+    background_load: "Carga cardiovascular de fondo (fuera de entrenamiento).",
+    total_load: "Carga cardiovascular total (workout + background).",
+    data_source: "Fuente del dato (app o dispositivo) elegida tras deduplicar.",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+-- Nota: 263 minutos vienen duplicados con fuentes 'Google Health App' y
+-- 'Pixel Watch' (valores casi iguales); se prefiere 'Pixel Watch' por minuto.
+select
+  timestamp(timestamp) as measured_at,
+  workout as workout_load,
+  background as background_load,
+  total as total_load,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_cardio_load")}
+qualify row_number() over (partition by timestamp(timestamp) order by data_source = 'Pixel Watch' desc) = 1

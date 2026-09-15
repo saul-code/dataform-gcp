@@ -1,0 +1,75 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_exercise_details",
+  description: "Staging del detalle por sesión de ejercicio: una fila por exercise_id.",
+  tags: ["staging", "health", "exercise"],
+  assertions: {
+    uniqueKey: ["exercise_id"],
+    nonNull: ["exercise_id", "start_at_utc", "activity_name"]
+  },
+  columns: {
+    exercise_id: "Identificador único de la sesión de ejercicio.",
+    start_at_utc: "Inicio de la actividad (TIMESTAMP, UTC).",
+    end_at_utc: "Fin de la actividad (TIMESTAMP, UTC).",
+    start_at_local: "Inicio de la actividad en hora local del dispositivo (DATETIME, America/Mexico_City).",
+    utc_offset: "Offset UTC del dispositivo al momento de la actividad.",
+    activity_name: "Nombre de la actividad reportada por el dispositivo.",
+    log_type: "Origen del log: 'AUTO_DETECTED' u otro.",
+    duration_min: "Duración total de la actividad en minutos (redondeado a 2 decimales, exercise_end - exercise_start).",
+    total_distance_km: "Distancia total en kilómetros (NULL si no fue medido, es decir el valor original es 0).",
+    total_altitude_m: "Altitud total ganada en metros (NULL si no fue medido, es decir el valor original es 0).",
+    avg_speed_kmh: "Velocidad promedio en km/h (NULL si no fue medido, es decir el valor original es 0).",
+    peak_speed_kmh: "Velocidad pico en km/h (NULL si no fue medido, es decir el valor original es 0).",
+    avg_heart_rate: "Frecuencia cardiaca promedio del tracker (NULL si no fue medido, es decir el valor original es 0).",
+    peak_heart_rate: "Frecuencia cardiaca pico del tracker (NULL si no fue medido, es decir el valor original es 0).",
+    total_calories: "Calorías totales del tracker (NULL si no fue medido, es decir el valor original es 0).",
+    total_steps: "Pasos totales del tracker (NULL si no fue medido, es decir el valor original es 0).",
+    cardio_load: "Carga cardiovascular del tracker (NULL si no fue medido, es decir el valor original es 0).",
+    autodetected_confirmed: "Indica si una actividad autodetectada fue confirmada por el usuario.",
+    deletion_reason: "Razón de borrado del registro, si aplica.",
+    created_at: "Momento en que se creó el registro de la actividad (TIMESTAMP, UTC).",
+    last_updated_at: "Momento de la última actualización del registro (TIMESTAMP, UTC).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+-- Nota: en las métricas del tracker, 0 significa "no medido" (típico de
+-- actividades autodetectadas sin tracker), por eso se usa nullif(..., 0).
+-- Se omiten columnas siempre nulas en los datos observados: intervals,
+-- events, activity_type_probabilities, location_metadata,
+-- suggested_start_timestamp, suggested_end_timestamp, reconciliation_status,
+-- activity_label, manually_logged_pool_length, manually_logged_pool_length_unit.
+select
+  exercise_id,
+  timestamp(exercise_start) as start_at_utc,
+  timestamp(exercise_end) as end_at_utc,
+  datetime(timestamp(exercise_start), 'America/Mexico_City') as start_at_local,
+  utc_offset,
+  activity_name,
+  log_type,
+  round(timestamp_diff(timestamp(exercise_end), timestamp(exercise_start), second) / 60, 2) as duration_min,
+
+  nullif(tracker_total_distance_mm, 0) / 1e6 as total_distance_km,
+  nullif(tracker_total_altitude_mm, 0) / 1000 as total_altitude_m,
+  nullif(tracker_avg_speed_mm_per_second, 0) * 0.0036 as avg_speed_kmh,
+  nullif(tracker_peak_speed_mm_per_second, 0) * 0.0036 as peak_speed_kmh,
+  nullif(tracker_avg_heart_rate, 0) as avg_heart_rate,
+  nullif(tracker_peak_heart_rate, 0) as peak_heart_rate,
+  nullif(tracker_total_calories, 0) as total_calories,
+  nullif(tracker_total_steps, 0) as total_steps,
+  nullif(tracker_cardio_load, 0) as cardio_load,
+
+  autodetected_confirmed,
+  deletion_reason,
+
+  timestamp(exercise_created) as created_at,
+  timestamp(exercise_last_updated) as last_updated_at,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_exercise_details")}

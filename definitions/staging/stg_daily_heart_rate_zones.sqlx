@@ -1,0 +1,49 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_daily_heart_rate_zones",
+  description: "Staging de las zonas de frecuencia cardiaca diarias: una fila por día, array zones pivotado a columnas.",
+  tags: ["staging", "health", "recovery"],
+  assertions: {
+    uniqueKey: ["zones_date"],
+    nonNull: ["zones_date"]
+  },
+  columns: {
+    zones_date: "Fecha de las zonas de frecuencia cardiaca (derivada de timestamp).",
+    light_min_bpm: "Límite inferior (bpm) de la zona LIGHT.",
+    light_max_bpm: "Límite superior (bpm) de la zona LIGHT.",
+    moderate_min_bpm: "Límite inferior (bpm) de la zona MODERATE.",
+    moderate_max_bpm: "Límite superior (bpm) de la zona MODERATE.",
+    vigorous_min_bpm: "Límite inferior (bpm) de la zona VIGOROUS.",
+    vigorous_max_bpm: "Límite superior (bpm) de la zona VIGOROUS.",
+    peak_min_bpm: "Límite inferior (bpm) de la zona PEAK.",
+    peak_max_bpm: "Límite superior (bpm) de la zona PEAK.",
+    data_source: "Fuente del dato (app o dispositivo).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+select
+  date(substr(timestamp, 1, 10)) as zones_date,
+
+  (select z.min_bpm from unnest(zones) z where z.zone_type = 'LIGHT') as light_min_bpm,
+  (select z.max_bpm from unnest(zones) z where z.zone_type = 'LIGHT') as light_max_bpm,
+
+  (select z.min_bpm from unnest(zones) z where z.zone_type = 'MODERATE') as moderate_min_bpm,
+  (select z.max_bpm from unnest(zones) z where z.zone_type = 'MODERATE') as moderate_max_bpm,
+
+  (select z.min_bpm from unnest(zones) z where z.zone_type = 'VIGOROUS') as vigorous_min_bpm,
+  (select z.max_bpm from unnest(zones) z where z.zone_type = 'VIGOROUS') as vigorous_max_bpm,
+
+  (select z.min_bpm from unnest(zones) z where z.zone_type = 'PEAK') as peak_min_bpm,
+  (select z.max_bpm from unnest(zones) z where z.zone_type = 'PEAK') as peak_max_bpm,
+
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_daily_heart_rate_zones")}

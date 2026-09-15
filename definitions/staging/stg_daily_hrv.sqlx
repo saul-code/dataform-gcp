@@ -1,0 +1,36 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_daily_hrv",
+  description: "Staging de la variabilidad de frecuencia cardiaca diaria: una fila por día.",
+  tags: ["staging", "health", "recovery"],
+  assertions: {
+    uniqueKey: ["hrv_date"],
+    nonNull: ["hrv_date"]
+  },
+  columns: {
+    hrv_date: "Fecha de la medición de HRV (derivada de timestamp).",
+    avg_rmssd_ms: "Promedio de RMSSD (variabilidad de frecuencia cardiaca) en milisegundos.",
+    nrem_heart_rate_bpm: "Frecuencia cardiaca promedio durante sueño no-REM (bpm).",
+    entropy: "Entropía de la señal de HRV.",
+    deep_sleep_rmssd_ms: "RMSSD durante sueño profundo en milisegundos.",
+    data_source: "Fuente del dato (app o dispositivo).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+select
+  date(substr(timestamp, 1, 10)) as hrv_date,
+  average_heart_rate_variability_milliseconds as avg_rmssd_ms,
+  non_rem_heart_rate_beats_per_minute as nrem_heart_rate_bpm,
+  entropy,
+  deep_sleep_root_mean_square_of_successive_differences_milliseconds as deep_sleep_rmssd_ms,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_daily_hrv")}

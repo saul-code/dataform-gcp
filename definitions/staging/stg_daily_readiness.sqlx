@@ -1,0 +1,40 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_daily_readiness",
+  description: "Staging del puntaje diario de readiness: una fila por día.",
+  tags: ["staging", "health", "recovery"],
+  assertions: {
+    uniqueKey: ["readiness_date"],
+    nonNull: ["readiness_date", "readiness_score"]
+  },
+  columns: {
+    readiness_date: "Fecha del puntaje de readiness (derivada de timestamp).",
+    readiness_score: "Puntaje de readiness (0-100).",
+    readiness_level: "Nivel categórico del readiness (type: LOW/MEDIUM/HIGH/etc).",
+    sleep_readiness: "Contribución del sueño al readiness (categórico).",
+    hrv_readiness: "Contribución de la variabilidad de frecuencia cardiaca al readiness (categórico).",
+    rhr_readiness: "Contribución de la frecuencia cardiaca en reposo al readiness (categórico).",
+    data_source: "Fuente del dato (app o dispositivo).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+-- Nota: se omite la columna origen "readiness_level" porque siempre viene
+-- 'TYPE_UNSPECIFIED' en los datos observados; se usa "type" como readiness_level.
+select
+  date(substr(timestamp, 1, 10)) as readiness_date,
+  score as readiness_score,
+  type as readiness_level,
+  sleep_readiness,
+  heart_rate_variability_readiness as hrv_readiness,
+  resting_heart_rate_readiness as rhr_readiness,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_daily_readiness")}

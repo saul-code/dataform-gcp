@@ -1,0 +1,30 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_daily_respiratory_rate",
+  description: "Staging de la frecuencia respiratoria diaria: una fila por día.",
+  tags: ["staging", "health", "recovery"],
+  assertions: {
+    uniqueKey: ["respiratory_date"],
+    nonNull: ["respiratory_date"]
+  },
+  columns: {
+    respiratory_date: "Fecha de la medición de frecuencia respiratoria (derivada de timestamp).",
+    breaths_per_minute: "Frecuencia respiratoria (respiraciones por minuto).",
+    data_source: "Fuente del dato (app o dispositivo).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+select
+  date(substr(timestamp, 1, 10)) as respiratory_date,
+  breaths_per_minute,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_daily_respiratory_rate")}

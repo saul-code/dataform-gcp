@@ -1,0 +1,32 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_cardio_acwr",
+  description: "Staging del ratio de carga aguda/crónica (ACWR) diario: una fila por día.",
+  tags: ["staging", "health", "recovery"],
+  assertions: {
+    uniqueKey: ["acwr_date"],
+    nonNull: ["acwr_date"]
+  },
+  columns: {
+    acwr_date: "Fecha del ratio ACWR (derivada de timestamp).",
+    acwr_ratio: "Ratio de carga aguda/crónica (acute:chronic workload ratio).",
+    acwr_label: "Etiqueta categórica del ratio ACWR (ej. zona de riesgo).",
+    data_source: "Fuente del dato (app o dispositivo).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+select
+  date(substr(timestamp, 1, 10)) as acwr_date,
+  ratio as acwr_ratio,
+  label as acwr_label,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_cardio_acwr")}

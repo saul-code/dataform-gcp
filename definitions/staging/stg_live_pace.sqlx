@@ -1,0 +1,34 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_live_pace",
+  description: "Staging del ritmo (pace) en vivo durante ejercicio: una fila por segundo.",
+  tags: ["staging", "health", "exercise"],
+  assertions: {
+    uniqueKey: ["recorded_at"],
+    nonNull: ["recorded_at"]
+  },
+  columns: {
+    recorded_at: "Segundo de la medición de ritmo (TIMESTAMP, UTC).",
+    steps: "Pasos acumulados al momento de la medición.",
+    distance_m: "Distancia acumulada en metros.",
+    altitude_gain_m: "Ganancia de altitud acumulada en metros.",
+    data_source: "Fuente del dato (app o dispositivo).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+select
+  timestamp(timestamp) as recorded_at,
+  steps,
+  distance_millimeters / 1000 as distance_m,
+  altitude_gain_millimeters / 1000 as altitude_gain_m,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_live_pace")}

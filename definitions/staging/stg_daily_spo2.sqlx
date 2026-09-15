@@ -1,0 +1,38 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_daily_spo2",
+  description: "Staging de la saturación de oxígeno (SpO2) diaria: una fila por día.",
+  tags: ["staging", "health", "recovery"],
+  assertions: {
+    uniqueKey: ["spo2_date"],
+    nonNull: ["spo2_date"]
+  },
+  columns: {
+    spo2_date: "Fecha de la medición de SpO2 (derivada de timestamp).",
+    avg_pct: "Porcentaje promedio de SpO2.",
+    lower_bound_pct: "Límite inferior del porcentaje de SpO2.",
+    upper_bound_pct: "Límite superior del porcentaje de SpO2.",
+    baseline_pct: "Porcentaje base (baseline) de SpO2 calibrado (NULL si no hay baseline, es decir el valor original es 0).",
+    std_dev_pct: "Desviación estándar del porcentaje de SpO2 (NULL si no hay baseline calibrada, es decir el valor original es 0).",
+    data_source: "Fuente del dato (app o dispositivo).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+select
+  date(substr(timestamp, 1, 10)) as spo2_date,
+  average_percentage as avg_pct,
+  lower_bound_percentage as lower_bound_pct,
+  upper_bound_percentage as upper_bound_pct,
+  nullif(baseline_percentage, 0) as baseline_pct,
+  nullif(standard_deviation_percentage, 0) as std_dev_pct,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_daily_spo2")}

@@ -1,0 +1,38 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_gps_location",
+  description: "Staging de ubicaciones GPS: una fila por segundo.",
+  tags: ["staging", "health", "exercise"],
+  assertions: {
+    uniqueKey: ["recorded_at"],
+    nonNull: ["recorded_at", "latitude", "longitude"]
+  },
+  columns: {
+    recorded_at: "Segundo de la medición GPS (TIMESTAMP, UTC).",
+    latitude: "Latitud.",
+    longitude: "Longitud.",
+    altitude_m: "Altitud en metros.",
+    data_source: "Fuente del dato (app o dispositivo) elegida tras deduplicar.",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+-- Nota: 122,344 segundos vienen con ambas fuentes y 91,593 solo con
+-- 'Pixel Watch'; (timestamp, data_source) es único, se prefiere 'Pixel Watch'
+-- por segundo para quedar con una fila por recorded_at.
+select
+  timestamp(timestamp) as recorded_at,
+  latitude,
+  longitude,
+  altitude as altitude_m,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_gps_location")}
+qualify row_number() over (partition by timestamp(timestamp) order by data_source = 'Pixel Watch' desc) = 1

@@ -1,0 +1,48 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_sleep_score",
+  description: "Staging del puntaje de sueño por sesión: una fila por sleep_log_entry_id.",
+  tags: ["staging", "health", "sleep"],
+  assertions: {
+    uniqueKey: ["sleep_log_entry_id"],
+    nonNull: ["sleep_log_entry_id", "scored_at", "wake_date_local"]
+  },
+  columns: {
+    sleep_log_entry_id: "Identificador único del registro de sueño puntuado.",
+    scored_at: "Momento en que se calculó el puntaje / hora de despertar (TIMESTAMP, UTC).",
+    wake_date_local: "Fecha de despertar en hora local (America/Mexico_City).",
+    overall_score: "Puntaje general de sueño.",
+    composition_score: "Puntaje de composición del sueño (fases).",
+    revitalization_score: "Puntaje de revitalización.",
+    duration_score: "Puntaje de duración del sueño.",
+    deep_sleep_minutes: "Minutos totales en fase de sueño profundo.",
+    resting_heart_rate_bpm: "Frecuencia cardiaca en reposo asociada a la sesión (bpm).",
+    restlessness: "Índice de inquietud durante el sueño.",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+-- Nota: timestamp es la hora de despertar en UTC; wake_date_local convierte
+-- a America/Mexico_City para obtener la fecha de despertar correcta.
+select
+  sleep_log_entry_id,
+  timestamp(timestamp) as scored_at,
+  date(timestamp(timestamp), 'America/Mexico_City') as wake_date_local,
+  overall_score,
+  -- Siempre nulos en el export actual, por eso bronze los tipa como STRING; se castean
+  -- para que no cambie el tipo de la columna cuando empiecen a llegar valores.
+  safe_cast(composition_score as int64) as composition_score,
+  revitalization_score,
+  safe_cast(duration_score as int64) as duration_score,
+  deep_sleep_in_minutes as deep_sleep_minutes,
+  resting_heart_rate as resting_heart_rate_bpm,
+  restlessness,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_sleep_score")}

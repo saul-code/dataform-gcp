@@ -1,0 +1,33 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_daily_resting_heart_rate",
+  description: "Staging de la frecuencia cardiaca en reposo diaria: una fila por día.",
+  tags: ["staging", "health", "recovery"],
+  assertions: {
+    uniqueKey: ["rhr_date"],
+    nonNull: ["rhr_date", "resting_heart_rate_bpm"]
+  },
+  columns: {
+    rhr_date: "Fecha de la medición de frecuencia cardiaca en reposo (derivada de timestamp).",
+    resting_heart_rate_bpm: "Frecuencia cardiaca en reposo (bpm).",
+    data_source: "Fuente del dato (app o dispositivo).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+-- Nota: existe 1 fecha duplicada observada (2026-03-26, 58.666 y 58.72 bpm,
+-- misma fuente); se deduplica quedándose con el valor más alto.
+select
+  date(substr(timestamp, 1, 10)) as rhr_date,
+  beats_per_minute as resting_heart_rate_bpm,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_daily_resting_heart_rate")}
+qualify row_number() over (partition by date(substr(timestamp, 1, 10)) order by beats_per_minute desc) = 1

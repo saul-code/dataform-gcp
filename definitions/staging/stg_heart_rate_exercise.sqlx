@@ -1,0 +1,32 @@
+config {
+  type: "table",
+  schema: "bronze",
+  name: "stg_heart_rate_exercise",
+  description: "Staging de la frecuencia cardiaca durante ejercicio: una fila por exercise_id y segundo.",
+  tags: ["staging", "health", "exercise"],
+  assertions: {
+    uniqueKey: ["exercise_id", "recorded_at"],
+    nonNull: ["exercise_id", "recorded_at", "heart_rate_bpm"]
+  },
+  columns: {
+    exercise_id: "Identificador de la sesión de ejercicio asociada.",
+    recorded_at: "Segundo de la medición de frecuencia cardiaca (TIMESTAMP, UTC).",
+    heart_rate_bpm: "Frecuencia cardiaca (bpm).",
+    data_source: "Fuente del dato (app o dispositivo).",
+    source_year: "Año de partición de origen en bronze (linaje).",
+    source_month: "Mes de partición de origen en bronze, formato '01'-'12' (linaje).",
+    loaded_at: "Timestamp en que se materializó esta fila en staging."
+  }
+}
+
+select
+  exercise_id,
+  timestamp(timestamp) as recorded_at,
+  beats_per_minute as heart_rate_bpm,
+  data_source,
+
+  year as source_year,
+  month as source_month,
+  current_timestamp() as loaded_at
+
+from ${ref("raw_heart_rate_exercise")}
