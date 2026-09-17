@@ -1,0 +1,318 @@
+config {
+  type: "table",
+  schema: "gold",
+  name: "cycling_rides",
+  description: "Recorridos en bicicleta listos para dashboard: silver.exercise_cycling enriquecido con lo que midió el reloj segundo a segundo (FC, GPS y ritmo en vivo, vía silver.exercise_track). Una fila por recorrido. Aporta lo que el resumen del reloj no trae: velocidad máxima y en movimiento, tiempo detenido, desnivel real, FC pico y deriva cardiaca, minutos por zona y el punto de inicio/fin para el mapa.",
+  tags: ["gold", "health", "cycling"],
+  assertions: {
+    uniqueKey: ["exercise_log_id"],
+    nonNull: ["exercise_log_id", "start_at_utc", "start_date_local", "duration_min", "calories", "has_track"],
+    rowConditions: [
+      "track_coverage_pct is null or track_coverage_pct between 0 and 105",
+      "max_heart_rate is null or max_heart_rate between 40 and 230",
+      "max_heart_rate is null or avg_heart_rate_track is null or max_heart_rate >= avg_heart_rate_track",
+      "max_speed_kmh is null or max_speed_kmh between 1 and 80",
+      "avg_moving_speed_kmh is null or avg_speed_overall_kmh is null or avg_moving_speed_kmh >= avg_speed_overall_kmh - 0.1",
+      "moving_min is null or moving_min <= duration_min + 1",
+      // Las dos fuentes de distancia se validan una contra otra: en los 48 recorridos con ambas difieren < 5%.
+      "distance_km is null or track_distance_km is null or abs(distance_km - track_distance_km) <= 0.05 * distance_km + 0.1",
+      "(start_latitude is null) = (start_longitude is null)"
+    ]
+  },
+  columns: {
+    exercise_log_id: "Identificador único del recorrido (logId).",
+    activity_name: "Nombre de la actividad: 'Ciclismo' (iniciada a mano en el reloj) o 'Bicicleta en exteriores' (auto-detectada).",
+    tracking_mode: "Cómo se registró: 'Manual' (log_type = 'tracker') o 'Auto-detectado'.",
+
+    start_at_utc: "Inicio del recorrido (TIMESTAMP, UTC).",
+    start_at_local: "Inicio del recorrido en hora local (DATETIME).",
+    end_at_local: "Fin del recorrido en hora local (DATETIME).",
+    start_date_local: "Fecha local del recorrido.",
+    start_week_local: "Lunes de la semana local, para agrupar por semana.",
+    start_month_local: "Primer día del mes local, para agrupar por mes.",
+    start_hour_local: "Hora local de inicio (0-23).",
+    day_of_week_local: "Día de la semana local, ISO: 1 = lunes ... 7 = domingo.",
+    day_name_local: "Nombre del día de la semana local en español.",
+    is_weekend: "TRUE si el recorrido empezó en sábado o domingo (hora local).",
+    time_of_day: "Franja del día de inicio: 'Madrugada' (0-5), 'Mañana' (6-11), 'Tarde' (12-18), 'Noche' (19-23).",
+
+    duration_min: "Duración total en minutos, según el resumen del reloj.",
+    active_duration_min: "Duración activa en minutos, según el resumen del reloj.",
+
+    has_track: "TRUE si el recorrido tiene serie por segundo en silver.exercise_track. FALSE en los 43 recorridos auto-detectados de abr-jun 2026 sin detalle: en ellos todas las columnas del track van en NULL.",
+    has_gps_track: "TRUE si el track trae al menos un punto GPS. 53 recorridos, 5 más que los que el resumen del reloj marca con has_gps.",
+    track_seconds: "Segundos con alguna medición (FC, GPS o ritmo) dentro de la ventana del recorrido.",
+    track_coverage_pct: "% de la duración del recorrido cubierto por el track. Por debajo de ~80% las métricas derivadas describen solo parte del recorrido.",
+
+    distance_km: "Distancia en km según el resumen del reloj. NULL si no se midió.",
+    track_distance_km: "Distancia en km sumada segundo a segundo del ritmo en vivo. Existe en 53 recorridos; en 3 más el ritmo grabó solo ceros y queda en NULL.",
+    best_distance_km: "Mejor distancia disponible: la del reloj y, si no la hay, la del track. Es la columna a usar para totales.",
+    distance_source: "De dónde salió best_distance_km: 'Reloj', 'Ritmo en vivo' o NULL si no se midió distancia.",
+
+    avg_speed_kmh: "Velocidad promedio en km/h según el reloj. Ojo: el reloj reporta velocidad en movimiento, no el promedio del recorrido completo.",
+    avg_speed_overall_kmh: "Velocidad promedio real del recorrido: distancia del track entre duración total, paradas incluidas.",
+    avg_moving_speed_kmh: "Velocidad promedio solo en los segundos en movimiento (>= 5 km/h).",
+    max_speed_kmh: "Velocidad máxima en km/h, sobre la señal suavizada a 10 s del track (la señal por segundo es demasiado ruidosa para un máximo).",
+    moving_min: "Minutos en movimiento (>= 5 km/h).",
+    stopped_min: "Minutos detenido dentro de la ventana del recorrido (semáforos, descansos).",
+    moving_pct: "% del track en movimiento.",
+
+    elevation_gain_m: "Ganancia de elevación en metros según el resumen del reloj. NULL sin GPS.",
+    ascent_m: "Metros de subida acumulados segundo a segundo (suma de los cambios positivos de altitud del ritmo en vivo).",
+    descent_m: "Metros de bajada acumulados (suma de los cambios negativos, en positivo).",
+    altitude_min_m: "Altitud mínima del recorrido según GPS (metros).",
+    altitude_max_m: "Altitud máxima del recorrido según GPS (metros).",
+    altitude_range_m: "Diferencia entre la altitud máxima y la mínima (metros).",
+
+    calories: "Calorías totales del recorrido (se puede sumar).",
+    calories_per_min: "Calorías por minuto activo.",
+
+    avg_heart_rate: "Frecuencia cardiaca promedio según el resumen del reloj.",
+    avg_heart_rate_track: "Frecuencia cardiaca promedio calculada sobre el track.",
+    max_heart_rate: "Frecuencia cardiaca pico del recorrido (bpm). No existe en el resumen del reloj.",
+    min_heart_rate: "Frecuencia cardiaca mínima del recorrido (bpm).",
+    hr_first_half_bpm: "FC promedio de la primera mitad del recorrido.",
+    hr_second_half_bpm: "FC promedio de la segunda mitad.",
+    hr_drift_bpm: "Deriva cardiaca: FC de la segunda mitad menos la de la primera. Positiva y alta sugiere fatiga, calor o deshidratación.",
+    hr_drift_pct: "Deriva cardiaca como % de la FC de la primera mitad.",
+
+    track_min_below_light: "Minutos del track por debajo de la zona ligera, según los umbrales de FC del día (stg_daily_heart_rate_zones).",
+    track_min_light: "Minutos del track en zona ligera.",
+    track_min_moderate: "Minutos del track en zona moderada.",
+    track_min_vigorous: "Minutos del track en zona vigorosa.",
+    track_min_peak: "Minutos del track en zona pico.",
+    track_pct_vigorous_plus: "% del track en zona vigorosa o pico: la parte del recorrido que de verdad fue exigente.",
+
+    hr_zone_out_of_range_min: "Minutos fuera de rango de FC según el resumen del reloj (taxonomía Fitbit, distinta de las zonas del track).",
+    hr_zone_fat_burn_min: "Minutos en zona de quema de grasas según el reloj.",
+    hr_zone_cardio_min: "Minutos en zona cardio según el reloj.",
+    hr_zone_peak_min: "Minutos en zona pico según el reloj.",
+
+    azm_total_minutes: "Minutos totales de zona activa (Active Zone Minutes).",
+    azm_fat_burn_minutes: "Minutos de zona activa de quema de grasas.",
+    azm_cardio_minutes: "Minutos de zona activa cardio (cuentan doble en azm_total_minutes).",
+    azm_peak_minutes: "Minutos de zona activa pico (cuentan doble en azm_total_minutes).",
+
+    start_latitude: "Latitud del primer punto GPS, para marcar el inicio en el mapa.",
+    start_longitude: "Longitud del primer punto GPS.",
+    end_latitude: "Latitud del último punto GPS.",
+    end_longitude: "Longitud del último punto GPS.",
+    center_latitude: "Latitud del centro del rectángulo que contiene el recorrido, para centrar el mapa.",
+    center_longitude: "Longitud del centro del rectángulo que contiene el recorrido.",
+    bbox_lat_span: "Alto en grados del rectángulo que contiene el recorrido, para calcular el zoom del mapa.",
+    bbox_lon_span: "Ancho en grados del rectángulo que contiene el recorrido.",
+    is_loop: "TRUE si el final quedó a menos de 200 m del inicio: el recorrido fue un circuito y no un trayecto de ida.",
+
+    loaded_at: "Timestamp en que se materializó esta fila en gold."
+  }
+}
+
+js {
+  // Por debajo de esto la bici está parada (semáforo, descanso). La señal ya viene suavizada a 10 s
+  // desde silver.exercise_track, así que el umbral no necesita histéresis.
+  const MOVING_SPEED_KMH = 5;
+  // Un circuito se considera cerrado si el final quedó a menos de esto del inicio.
+  const LOOP_CLOSE_M = 200;
+}
+
+-- El cruce con frecuencia cardiaca, GPS y ritmo en vivo ya está resuelto en silver.exercise_track:
+-- ahí se recortan las tres series a la ventana real de la sesión (la FC sigue grabando hasta 10 min
+-- después del fin), se asignan GPS y ritmo por ventana de tiempo (no traen exercise_id) y se
+-- suaviza la velocidad. Aquí solo se agrega ese track al grano de recorrido.
+with track_points as (
+  select
+    *,
+    -- La deriva cardiaca parte el recorrido por tiempo transcurrido, no por número de filas: el track tiene huecos.
+    max(elapsed_sec) over (partition by exercise_log_id) as last_sec
+  from ${ref("exercise_track")}
+  where activity_group = 'Ciclismo'
+),
+
+track as (
+  select
+    exercise_log_id,
+
+    count(*) as track_seconds,
+    countif(heart_rate_bpm is not null) as hr_seconds,
+    countif(latitude is not null) as gps_seconds,
+
+    -- En 3 recorridos el ritmo en vivo grabó segundos con distancia 0 y nunca midió avance: es
+    -- "no medido", no "no se movió", así que la distancia y todo lo que cuelga de ella van en NULL.
+    nullif(max(cumulative_distance_km), 0) as track_distance_km,
+    max(speed_kmh) as max_speed_kmh,
+    countif(speed_kmh >= ${MOVING_SPEED_KMH}) as moving_seconds,
+    avg(if(speed_kmh >= ${MOVING_SPEED_KMH}, speed_kmh, null)) as avg_moving_speed_kmh,
+
+    -- El ritmo en vivo trae el cambio de altitud con signo por segundo: subida y bajada se separan.
+    sum(if(altitude_gain_m > 0, altitude_gain_m, 0)) as ascent_m,
+    sum(if(altitude_gain_m < 0, -altitude_gain_m, 0)) as descent_m,
+    min(altitude_m) as altitude_min_m,
+    max(altitude_m) as altitude_max_m,
+
+    avg(heart_rate_bpm) as avg_heart_rate_track,
+    max(heart_rate_bpm) as max_heart_rate,
+    min(heart_rate_bpm) as min_heart_rate,
+
+    avg(if(elapsed_sec <= last_sec / 2, heart_rate_bpm, null)) as hr_first_half_bpm,
+    avg(if(elapsed_sec > last_sec / 2, heart_rate_bpm, null)) as hr_second_half_bpm,
+
+    countif(hr_zone = 'Bajo ligera') / 60 as min_below_light,
+    countif(hr_zone = 'Ligera') / 60 as min_light,
+    countif(hr_zone = 'Moderada') / 60 as min_moderate,
+    countif(hr_zone = 'Vigorosa') / 60 as min_vigorous,
+    countif(hr_zone = 'Pico') / 60 as min_peak,
+
+    min(if(latitude is not null, elapsed_sec, null)) as first_gps_sec,
+    max(if(latitude is not null, elapsed_sec, null)) as last_gps_sec,
+    min(latitude) as min_lat,
+    max(latitude) as max_lat,
+    min(longitude) as min_lon,
+    max(longitude) as max_lon
+
+  from track_points
+  group by exercise_log_id
+),
+
+-- Primer y último punto GPS del recorrido, para el marcador de inicio/fin del mapa.
+endpoints as (
+  select
+    t.exercise_log_id,
+    max(if(t.elapsed_sec = k.first_gps_sec, t.latitude, null)) as start_latitude,
+    max(if(t.elapsed_sec = k.first_gps_sec, t.longitude, null)) as start_longitude,
+    max(if(t.elapsed_sec = k.last_gps_sec, t.latitude, null)) as end_latitude,
+    max(if(t.elapsed_sec = k.last_gps_sec, t.longitude, null)) as end_longitude
+  from track_points t
+  join track k using (exercise_log_id)
+  where t.elapsed_sec in (k.first_gps_sec, k.last_gps_sec)
+  group by t.exercise_log_id
+),
+
+joined as (
+  select
+    c.*,
+    t.exercise_log_id is not null as has_track,
+    t.track_seconds,
+    t.hr_seconds,
+    t.gps_seconds,
+    t.track_distance_km,
+    t.max_speed_kmh,
+    t.moving_seconds,
+    t.avg_moving_speed_kmh,
+    t.ascent_m,
+    t.descent_m,
+    t.altitude_min_m,
+    t.altitude_max_m,
+    t.avg_heart_rate_track,
+    t.max_heart_rate,
+    t.min_heart_rate,
+    t.hr_first_half_bpm,
+    t.hr_second_half_bpm,
+    t.min_below_light,
+    t.min_light,
+    t.min_moderate,
+    t.min_vigorous,
+    t.min_peak,
+    t.min_lat,
+    t.max_lat,
+    t.min_lon,
+    t.max_lon,
+    e.start_latitude,
+    e.start_longitude,
+    e.end_latitude,
+    e.end_longitude
+  from ${ref("exercise_cycling")} c
+  left join track t using (exercise_log_id)
+  left join endpoints e using (exercise_log_id)
+)
+
+select
+  exercise_log_id,
+  activity_name,
+  tracking_mode,
+
+  start_at_utc,
+  start_at_local,
+  end_at_local,
+  start_date_local,
+  start_week_local,
+  start_month_local,
+  start_hour_local,
+  day_of_week_local,
+  day_name_local,
+  is_weekend,
+  time_of_day,
+
+  duration_min,
+  active_duration_min,
+
+  has_track,
+  coalesce(gps_seconds, 0) > 0 as has_gps_track,
+  track_seconds,
+  round(100 * safe_divide(track_seconds, duration_min * 60), 1) as track_coverage_pct,
+
+  distance_km,
+  round(track_distance_km, 2) as track_distance_km,
+  round(coalesce(distance_km, track_distance_km), 2) as best_distance_km,
+  case
+    when distance_km is not null then 'Reloj'
+    when track_distance_km is not null then 'Ritmo en vivo'
+  end as distance_source,
+
+  avg_speed_kmh,
+  round(safe_divide(60 * track_distance_km, duration_min), 1) as avg_speed_overall_kmh,
+  round(avg_moving_speed_kmh, 1) as avg_moving_speed_kmh,
+  if(track_distance_km is not null, round(max_speed_kmh, 1), null) as max_speed_kmh,
+  if(track_distance_km is not null, round(moving_seconds / 60, 1), null) as moving_min,
+  if(track_distance_km is not null, round((track_seconds - moving_seconds) / 60, 1), null) as stopped_min,
+  if(track_distance_km is not null, round(100 * safe_divide(moving_seconds, track_seconds), 1), null) as moving_pct,
+
+  elevation_gain_m,
+  -- Sin GPS el ritmo en vivo no mide altitud y la suma sale en 0: es "no medido", no "plano".
+  if(gps_seconds > 0, round(ascent_m, 1), null) as ascent_m,
+  if(gps_seconds > 0, round(descent_m, 1), null) as descent_m,
+  round(altitude_min_m, 1) as altitude_min_m,
+  round(altitude_max_m, 1) as altitude_max_m,
+  round(altitude_max_m - altitude_min_m, 1) as altitude_range_m,
+
+  calories,
+  calories_per_min,
+
+  avg_heart_rate,
+  round(avg_heart_rate_track) as avg_heart_rate_track,
+  max_heart_rate,
+  min_heart_rate,
+  round(hr_first_half_bpm, 1) as hr_first_half_bpm,
+  round(hr_second_half_bpm, 1) as hr_second_half_bpm,
+  round(hr_second_half_bpm - hr_first_half_bpm, 1) as hr_drift_bpm,
+  round(100 * safe_divide(hr_second_half_bpm - hr_first_half_bpm, hr_first_half_bpm), 1) as hr_drift_pct,
+
+  round(min_below_light, 1) as track_min_below_light,
+  round(min_light, 1) as track_min_light,
+  round(min_moderate, 1) as track_min_moderate,
+  round(min_vigorous, 1) as track_min_vigorous,
+  round(min_peak, 1) as track_min_peak,
+  round(100 * safe_divide(min_vigorous + min_peak, nullif(hr_seconds, 0) / 60), 1) as track_pct_vigorous_plus,
+
+  hr_zone_out_of_range_min,
+  hr_zone_fat_burn_min,
+  hr_zone_cardio_min,
+  hr_zone_peak_min,
+
+  azm_total_minutes,
+  azm_fat_burn_minutes,
+  azm_cardio_minutes,
+  azm_peak_minutes,
+
+  start_latitude,
+  start_longitude,
+  end_latitude,
+  end_longitude,
+  round((min_lat + max_lat) / 2, 6) as center_latitude,
+  round((min_lon + max_lon) / 2, 6) as center_longitude,
+  round(max_lat - min_lat, 6) as bbox_lat_span,
+  round(max_lon - min_lon, 6) as bbox_lon_span,
+  st_distance(st_geogpoint(start_longitude, start_latitude), st_geogpoint(end_longitude, end_latitude)) < ${LOOP_CLOSE_M} as is_loop,
+
+  current_timestamp() as loaded_at
+
+from joined
