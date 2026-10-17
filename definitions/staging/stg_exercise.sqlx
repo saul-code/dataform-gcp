@@ -63,7 +63,29 @@ config {
 
 select
   logId as exercise_log_id,
-  activityName as activity_name,
+  case lower(trim(activityName))
+    when 'bike' then 'Ciclismo'
+    when 'outdoor bike' then 'Bicicleta en exteriores'
+    when 'walk' then 'Caminar'
+    when 'outdoor walk' then 'Caminar'
+    when 'treadmill run' then 'Carrera en Cinta'
+    when 'treadmill' then 'Carrera en Cinta'
+    when 'run' then 'Correr'
+    when 'outdoor run' then 'Correr'
+    when 'hike' then 'Senderismo'
+    when 'hiking' then 'Senderismo'
+    when 'swim' then 'Natación'
+    when 'swimming' then 'Natación'
+    when 'pool swim' then 'Natación'
+    when 'open water swim' then 'Natación'
+    when 'sport' then 'Deporte'
+    when 'sports' then 'Deporte'
+    when 'aerobic workout' then 'Ejercicio aeróbico'
+    when 'workout' then 'Entrenamiento'
+    when 'spinning' then 'Spinning'
+    when 'indoor bike' then 'Spinning'
+    else activityName
+  end as activity_name,
   activityTypeId as activity_type_id,
 
   parse_datetime('%m/%d/%y %H:%M:%S', startTime) as start_at,
@@ -91,8 +113,8 @@ select
   poolLengthUnit as pool_length_unit,
   swimLengths as swim_lengths,
 
-  hasGps as has_gps,
-  hasActiveZoneMinutes as has_active_zone_minutes,
+  coalesce(hasGps, false) as has_gps,
+  coalesce(hasActiveZoneMinutes, activeZoneMinutes.totalMinutes is not null) as has_active_zone_minutes,
   shouldFetchDetails as should_fetch_details,
   logType as log_type,
 
@@ -101,20 +123,54 @@ select
   (select al.minutes from unnest(activityLevel) al where al.name = 'fairly') as minutes_fairly,
   (select al.minutes from unnest(activityLevel) al where al.name = 'very') as minutes_very,
 
-  activeZoneMinutes.totalMinutes as azm_total_minutes,
+  coalesce(
+    activeZoneMinutes.totalMinutes,
+    if(array_length(activeZoneMinutes.minutesInHeartRateZones) > 0, 0, null)
+  ) as azm_total_minutes,
   (select z.minutes from unnest(activeZoneMinutes.minutesInHeartRateZones) z where z.type = 'OUT_OF_ZONE') as azm_out_of_zone_minutes,
   (select z.minutes from unnest(activeZoneMinutes.minutesInHeartRateZones) z where z.type = 'FAT_BURN') as azm_fat_burn_minutes,
   (select z.minutes from unnest(activeZoneMinutes.minutesInHeartRateZones) z where z.type = 'CARDIO') as azm_cardio_minutes,
   (select z.minutes from unnest(activeZoneMinutes.minutesInHeartRateZones) z where z.type = 'PEAK') as azm_peak_minutes,
 
-  array(
-    select as struct
-      z.name as zone_name,
-      z.min as min_bpm,
-      z.max as max_bpm,
-      z.minutes,
-      z.caloriesOut as calories_out
-    from unnest(heartRateZones) z
+  if(
+    array_length(heartRateZones) > 0,
+    array(
+      select as struct
+        case lower(trim(z.name))
+          when 'out of range' then 'Fuera del rangoo'
+          when 'out_of_zone' then 'Fuera del rangoo'
+          when 'light' then 'Fuera del rangoo'
+          when 'fat burn' then 'Quema de grasas'
+          when 'fat_burn' then 'Quema de grasas'
+          when 'moderate' then 'Quema de grasas'
+          when 'cardio' then 'Zona cardio'
+          when 'vigorous' then 'Zona cardio'
+          when 'peak' then 'Pico'
+          else z.name
+        end as zone_name,
+        z.min as min_bpm,
+        z.max as max_bpm,
+        z.minutes,
+        z.caloriesOut as calories_out
+      from unnest(heartRateZones) z
+    ),
+    array(
+      select as struct
+        case z.type
+          when 'OUT_OF_ZONE' then 'Fuera del rangoo'
+          when 'FAT_BURN' then 'Quema de grasas'
+          when 'CARDIO' then 'Zona cardio'
+          when 'PEAK' then 'Pico'
+          else z.zoneName
+        end as zone_name,
+        cast(null as int64) as min_bpm,
+        cast(null as int64) as max_bpm,
+        z.minutes,
+        cast(null as float64) as calories_out
+      from unnest(activeZoneMinutes.minutesInHeartRateZones) z
+      where z.zoneName in ('out_of_zone', 'fat_burn', 'cardio', 'peak')
+      order by z.order
+    )
   ) as heart_rate_zones,
 
   source.type as source_type,

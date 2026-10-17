@@ -40,7 +40,10 @@ select
   (select z.min_bpm from unnest(zones) z where z.zone_type = 'PEAK') as peak_min_bpm,
   (select z.max_bpm from unnest(zones) z where z.zone_type = 'PEAK') as peak_max_bpm,
 
-  data_source,
+  coalesce(
+    json_value(data_source, '$.device.displayName'),
+    if(starts_with(data_source, '{'), 'Google Health App', data_source)
+  ) as data_source,
 
   year as source_year,
   month as source_month,

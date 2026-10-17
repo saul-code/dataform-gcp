@@ -21,7 +21,10 @@ config {
 select
   date(substr(timestamp, 1, 10)) as respiratory_date,
   breaths_per_minute,
-  data_source,
+  coalesce(
+    json_value(data_source, '$.device.displayName'),
+    if(starts_with(data_source, '{'), 'Google Health App', data_source)
+  ) as data_source,
 
   year as source_year,
   month as source_month,

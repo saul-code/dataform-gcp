@@ -73,7 +73,7 @@ select
   efficiency as efficiency_pct,
   mainSleep as is_main_sleep,
   type as sleep_type,
-  logType as log_type,
+  coalesce(logType, 'auto_detected') as log_type,
   infoCode as info_code,
 
   levels.summary.deep.count as deep_count,
