@@ -109,6 +109,11 @@ main_sleep as (
   select *
   from ${ref("sleep_sessions")}
   where is_main_sleep
+  -- Evitar multiplicar el día si el dispositivo marca varias sesiones principales.
+  qualify row_number() over (
+    partition by sleep_date
+    order by minutes_asleep desc, end_at_local desc, sleep_log_id desc
+  ) = 1
 ),
 
 naps as (

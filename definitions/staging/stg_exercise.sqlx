@@ -3,7 +3,7 @@ config {
   schema: "bronze",
   name: "stg_exercise",
   description: "Staging de sesiones de ejercicio: una fila por logId, tipos casteados y arrays pivotados.",
-  tags: ["staging", "health"],
+  tags: ["staging", "health","cycling"],
   assertions: {
     uniqueKey: ["exercise_log_id"],
     nonNull: ["exercise_log_id", "start_at"]

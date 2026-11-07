@@ -4,6 +4,10 @@ config {
   name: "sleep_sessions",
   description: "Sesiones de sueño limpias y listas para visualización: una fila por sesión (principal o siesta), con el puntaje de stg_sleep_score unido por id, fases como minutos y porcentaje, hora de dormir en un eje continuo y columnas siempre vacías o sin sentido descartadas.",
   tags: ["silver", "health", "sleep"],
+  bigquery: {
+    partitionBy: "sleep_date",
+    clusterBy: ["is_main_sleep"]
+  },
   assertions: {
     uniqueKey: ["sleep_log_id"],
     nonNull: ["sleep_log_id", "sleep_date", "start_at_local", "end_at_local", "is_main_sleep", "minutes_asleep"],
@@ -23,7 +27,7 @@ config {
     day_of_week_local: "Día de la semana de sleep_date, ISO: 1 = lunes ... 7 = domingo.",
     day_name_local: "Nombre del día de la semana de sleep_date en español.",
     is_weekend: "TRUE si sleep_date es sábado o domingo.",
-    is_main_sleep: "TRUE si es la sesión principal del día (hay exactamente una por fecha).",
+    is_main_sleep: "TRUE si es la sesión principal del día (según el indicador del dispositivo).",
     sleep_kind: "'Principal' o 'Siesta'.",
     start_at_local: "Inicio de la sesión en hora local (DATETIME). El export de sueño ya viene en hora local.",
     end_at_local: "Fin de la sesión en hora local (DATETIME).",
@@ -43,12 +47,16 @@ config {
     deep_pct: "% del sueño (profundo + ligero + REM) en profundo.",
     light_pct: "% del sueño en ligero.",
     rem_pct: "% del sueño en REM.",
-    deep_avg_30d_minutes: "Promedio de 30 días de sueño profundo según el reloj. NULL cuando el reloj aún no tenía historial (el origen reporta 0).",
-    light_avg_30d_minutes: "Promedio de 30 días de sueño ligero según el reloj. NULL sin historial.",
-    rem_avg_30d_minutes: "Promedio de 30 días de sueño REM según el reloj. NULL sin historial.",
+    deep_avg_30d_minutes: "Promedio de 30 días de sueño profundo según el reloj, conservando ceros de origen.",
+    light_avg_30d_minutes: "Promedio de 30 días de sueño ligero según el reloj. NULL cuando no está disponible.",
+    rem_avg_30d_minutes: "Promedio de 30 días de sueño REM según el reloj. NULL cuando no está disponible.",
     restless_minutes: "Minutos inquieto (solo sesiones sin fases).",
-    sleep_score: "Puntaje general de sueño (0-100). NULL si el reloj no puntuó la sesión (siestas).",
-    sleep_score_label: "Categoría del puntaje con los rangos de Fitbit: 'Excelente' (90-100), 'Bueno' (80-89), 'Regular' (60-79), 'Malo' (< 60).",
+    sleep_score: "Puntaje general de sueño (0-100). NULL si el reloj no puntuó la sesión.",
+    sleep_score_label: "Categoría del puntaje para el dashboard: 'Excelente' (90-100), 'Bueno' (80-89), 'Regular' (60-79), 'Malo' (< 60).",
+    has_sleep_score: "TRUE si existe un registro de puntaje asociado a la sesión.",
+    composition_score: "Puntaje de composición; NULL cuando no está disponible.",
+    duration_score: "Puntaje de duración; NULL cuando no está disponible.",
+    score_deep_sleep_minutes: "Minutos de sueño profundo reportados en el puntaje, para comparar con las fases.",
     revitalization_score: "Puntaje de revitalización.",
     resting_heart_rate_bpm: "Frecuencia cardiaca en reposo durante la sesión (bpm).",
     restlessness: "Índice de inquietud durante la sesión (fracción 0-1).",
@@ -56,13 +64,13 @@ config {
   }
 }
 
--- Se omiten de stg_sleep_score composition_score y duration_score (100 % NULL en el export) y deep_sleep_minutes
--- (duplica deep_minutes). La unión es por id y no por fecha porque hay días con siesta y sesión principal.
--- Los *_count de fases y los arrays se omiten aquí; el detalle por fase vive en silver.sleep_stages.
+-- Unión por identificador: una fecha puede contener sueño principal y varias siestas.
+-- Las fases detalladas permanecen en staging; esta tabla expone métricas escalares.
+-- No convertir las horas locales del dispositivo a UTC.
 with sleeps as (
   select
     s.*,
-    coalesce(s.deep_minutes, 0) + coalesce(s.light_minutes, 0) + coalesce(s.rem_minutes, 0) as staged_minutes
+    s.deep_minutes + s.light_minutes + s.rem_minutes as staged_minutes
   from ${ref("stg_sleep")} s
 )
 
@@ -100,11 +108,12 @@ select
   round(100 * safe_divide(s.deep_minutes, s.staged_minutes), 1) as deep_pct,
   round(100 * safe_divide(s.light_minutes, s.staged_minutes), 1) as light_pct,
   round(100 * safe_divide(s.rem_minutes, s.staged_minutes), 1) as rem_pct,
-  nullif(s.deep_avg_30d_minutes, 0) as deep_avg_30d_minutes,
-  nullif(s.light_avg_30d_minutes, 0) as light_avg_30d_minutes,
-  nullif(s.rem_avg_30d_minutes, 0) as rem_avg_30d_minutes,
+  s.deep_avg_30d_minutes as deep_avg_30d_minutes,
+  s.light_avg_30d_minutes as light_avg_30d_minutes,
+  s.rem_avg_30d_minutes as rem_avg_30d_minutes,
   s.restless_minutes,
 
+  sc.sleep_log_entry_id is not null as has_sleep_score,
   sc.overall_score as sleep_score,
   case
     when sc.overall_score >= 90 then 'Excelente'
@@ -112,6 +121,9 @@ select
     when sc.overall_score >= 60 then 'Regular'
     when sc.overall_score is not null then 'Malo'
   end as sleep_score_label,
+  sc.composition_score,
+  sc.duration_score,
+  sc.deep_sleep_minutes as score_deep_sleep_minutes,
   sc.revitalization_score,
   sc.resting_heart_rate_bpm,
   round(sc.restlessness, 3) as restlessness,
