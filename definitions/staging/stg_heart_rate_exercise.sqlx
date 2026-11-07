@@ -23,7 +23,10 @@ select
   exercise_id,
   timestamp(timestamp) as recorded_at,
   beats_per_minute as heart_rate_bpm,
-  data_source,
+  coalesce(
+    json_value(data_source, '$.device.displayName'),
+    if(starts_with(data_source, '{'), 'Google Health App', data_source)
+  ) as data_source,
 
   year as source_year,
   month as source_month,

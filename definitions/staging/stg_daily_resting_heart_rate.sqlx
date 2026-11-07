@@ -23,7 +23,10 @@ config {
 select
   date(substr(timestamp, 1, 10)) as rhr_date,
   beats_per_minute as resting_heart_rate_bpm,
-  data_source,
+  coalesce(
+    json_value(data_source, '$.device.displayName'),
+    if(starts_with(data_source, '{'), 'Google Health App', data_source)
+  ) as data_source,
 
   year as source_year,
   month as source_month,

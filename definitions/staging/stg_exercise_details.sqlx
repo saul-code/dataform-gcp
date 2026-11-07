@@ -48,7 +48,29 @@ select
   timestamp(exercise_end) as end_at_utc,
   datetime(timestamp(exercise_start), 'America/Mexico_City') as start_at_local,
   utc_offset,
-  activity_name,
+  case lower(trim(activity_name))
+    when 'bike' then 'Ciclismo'
+    when 'outdoor bike' then 'Bicicleta en exteriores'
+    when 'walk' then 'Caminar'
+    when 'outdoor walk' then 'Caminar'
+    when 'treadmill run' then 'Carrera en Cinta'
+    when 'treadmill' then 'Carrera en Cinta'
+    when 'run' then 'Correr'
+    when 'outdoor run' then 'Correr'
+    when 'hike' then 'Senderismo'
+    when 'hiking' then 'Senderismo'
+    when 'swim' then 'Natación'
+    when 'swimming' then 'Natación'
+    when 'pool swim' then 'Natación'
+    when 'open water swim' then 'Natación'
+    when 'sport' then 'Deporte'
+    when 'sports' then 'Deporte'
+    when 'aerobic workout' then 'Ejercicio aeróbico'
+    when 'workout' then 'Entrenamiento'
+    when 'spinning' then 'Spinning'
+    when 'indoor bike' then 'Spinning'
+    else activity_name
+  end as activity_name,
   log_type,
   round(timestamp_diff(timestamp(exercise_end), timestamp(exercise_start), second) / 60, 2) as duration_min,
 

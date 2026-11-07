@@ -27,7 +27,10 @@ select
   non_rem_heart_rate_beats_per_minute as nrem_heart_rate_bpm,
   entropy,
   deep_sleep_root_mean_square_of_successive_differences_milliseconds as deep_sleep_rmssd_ms,
-  data_source,
+  coalesce(
+    json_value(data_source, '$.device.displayName'),
+    if(starts_with(data_source, '{'), 'Google Health App', data_source)
+  ) as data_source,
 
   year as source_year,
   month as source_month,

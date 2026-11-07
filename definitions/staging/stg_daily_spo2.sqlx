@@ -29,7 +29,10 @@ select
   upper_bound_percentage as upper_bound_pct,
   nullif(baseline_percentage, 0) as baseline_pct,
   nullif(standard_deviation_percentage, 0) as std_dev_pct,
-  data_source,
+  coalesce(
+    json_value(data_source, '$.device.displayName'),
+    if(starts_with(data_source, '{'), 'Google Health App', data_source)
+  ) as data_source,
 
   year as source_year,
   month as source_month,
