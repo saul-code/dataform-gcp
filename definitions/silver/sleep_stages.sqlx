@@ -1,0 +1,70 @@
+config {
+  type: "table",
+  schema: "silver",
+  name: "sleep_stages",
+  description: "Fases de sueño para hipnogramas: una fila por segmento continuo de fase dentro de cada sesión (array levels.data de stg_sleep aplanado), con nombre en español y orden de eje.",
+  tags: ["silver", "health", "sleep"],
+  assertions: {
+    uniqueKey: ["sleep_log_id", "stage_order"],
+    nonNull: ["sleep_log_id", "sleep_date", "stage_order", "stage_start_at_local", "stage_name", "duration_sec"],
+    rowConditions: [
+      "duration_sec > 0",
+      "stage_end_at_local > stage_start_at_local"
+    ]
+  },
+  columns: {
+    sleep_log_id: "Identificador de la sesión de sueño; une con silver.sleep_sessions.",
+    sleep_date: "Fecha de despertar de la sesión.",
+    is_main_sleep: "TRUE si la sesión es la principal del día.",
+    stage_order: "Posición (0-based) del segmento dentro de la sesión.",
+    stage_start_at_local: "Inicio del segmento en hora local (DATETIME).",
+    stage_end_at_local: "Fin del segmento en hora local (DATETIME).",
+    minutes_from_sleep_start: "Minutos transcurridos desde el inicio de la sesión hasta el inicio del segmento, para alinear hipnogramas de noches distintas.",
+    stage_level: "Nivel original del reloj: deep/light/rem/wake (sesiones con fases) o asleep/restless/awake (sesiones classic).",
+    stage_name: "Nombre en español: 'Profundo', 'Ligero', 'REM', 'Despierto', 'Dormido' o 'Inquieto'.",
+    stage_depth: "Orden para el eje del hipnograma, de más despierto a más profundo: 0 = Despierto, 1 = Inquieto/REM, 2 = Ligero/Dormido, 3 = Profundo.",
+    duration_sec: "Duración del segmento en segundos.",
+    duration_min: "Duración del segmento en minutos.",
+    loaded_at: "Timestamp en que se materializó esta fila en silver."
+  }
+}
+
+-- Solo se usa levels.data. levels.shortData son despertares cortos (< 3 min) que se sobreponen a los
+-- segmentos de data; sumarlos duplicaría tiempo. La suma de data cuadra con la duración en las 258 sesiones.
+select
+  s.sleep_log_id,
+  s.sleep_date,
+  s.is_main_sleep,
+
+  stage_offset as stage_order,
+  st.start_at as stage_start_at_local,
+  datetime_add(st.start_at, interval st.seconds second) as stage_end_at_local,
+  round(datetime_diff(st.start_at, s.start_at, second) / 60, 1) as minutes_from_sleep_start,
+
+  st.level as stage_level,
+  case st.level
+    when 'deep' then 'Profundo'
+    when 'light' then 'Ligero'
+    when 'rem' then 'REM'
+    when 'wake' then 'Despierto'
+    when 'asleep' then 'Dormido'
+    when 'restless' then 'Inquieto'
+    when 'awake' then 'Despierto'
+  end as stage_name,
+  case st.level
+    when 'wake' then 0
+    when 'awake' then 0
+    when 'rem' then 1
+    when 'restless' then 1
+    when 'light' then 2
+    when 'asleep' then 2
+    when 'deep' then 3
+  end as stage_depth,
+
+  st.seconds as duration_sec,
+  round(st.seconds / 60, 2) as duration_min,
+
+  current_timestamp() as loaded_at
+
+from ${ref("stg_sleep")} s
+cross join unnest(s.sleep_stages) as st with offset as stage_offset

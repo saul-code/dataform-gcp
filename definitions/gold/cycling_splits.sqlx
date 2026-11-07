@@ -1,0 +1,239 @@
+config {
+  type: "table",
+  schema: "gold",
+  name: "cycling_splits",
+  description: "Parciales por kilómetro de cada recorrido en bicicleta: una fila por recorrido y kilómetro, con velocidad, frecuencia cardiaca y desnivel de ese tramo. Grano distinto al de gold.cycling_rides, por eso va en su propia tabla: aquí se ve cómo cambia el esfuerzo dentro del recorrido (arranque, subidas, si se pagó el ritmo al final).",
+  tags: ["gold", "health", "cycling"],
+  bigquery: {
+    clusterBy: ["exercise_log_id"]
+  },
+  assertions: {
+    uniqueKey: ["exercise_log_id", "km_index"],
+    nonNull: ["exercise_log_id", "km_index", "start_date_local", "split_distance_km", "split_duration_min"],
+    rowConditions: [
+      "km_index >= 0",
+      "split_distance_km between 0.05 and 1.05",
+      "split_duration_min > 0",
+      "avg_speed_kmh > 0",
+      // Solo los tramos completos son comparables: el último tramo de cada recorrido arrastra el
+      // tiempo que el reloj siguió grabando ya detenido (hasta 56 min en un caso) y su velocidad
+      // con paradas baja hasta 0.2 km/h sin que eso sea un error de medición.
+      "not is_complete_km or avg_speed_kmh between 2 and 60",
+      "avg_heart_rate is null or avg_heart_rate between 40 and 220",
+      "max_heart_rate is null or avg_heart_rate is null or max_heart_rate >= avg_heart_rate"
+    ]
+  },
+  columns: {
+    exercise_log_id: "Identificador del recorrido; une con gold.cycling_rides.",
+    km_index: "Kilómetro del recorrido, empezando en 0: la fila 0 va del km 0 al 1.",
+    km_label: "Etiqueta del tramo para el eje del dashboard ('Km 1', 'Km 2', ...).",
+    start_date_local: "Fecha local del recorrido, para filtrar sin unir con gold.cycling_rides.",
+    start_at_local: "Inicio del recorrido en hora local (DATETIME).",
+    activity_name: "Nombre de la actividad del recorrido.",
+
+    split_distance_km: "Kilómetros recorridos en el tramo. El último tramo de cada recorrido casi siempre es parcial.",
+    is_complete_km: "TRUE si el tramo cubre un kilómetro completo (>= 0.95 km). Filtrar por esto antes de comparar velocidades entre tramos.",
+    elapsed_min_at_start: "Minutos transcurridos del recorrido al empezar el tramo.",
+    split_duration_min: "Minutos que tomó el tramo, paradas incluidas.",
+    moving_min: "Minutos en movimiento (>= 5 km/h) dentro del tramo.",
+    stopped_min: "Minutos detenido dentro del tramo.",
+
+    avg_speed_kmh: "Velocidad promedio del tramo: distancia entre duración, paradas incluidas. En el último tramo de cada recorrido cuenta también el tiempo que el reloj siguió grabando ya detenido, por eso baja tanto; comparar solo entre tramos con is_complete_km.",
+    avg_moving_speed_kmh: "Velocidad promedio del tramo solo en los segundos en movimiento.",
+    max_speed_kmh: "Velocidad máxima del tramo (señal suavizada a 10 s).",
+    pace_min_per_km: "Ritmo del tramo en minutos por kilómetro, paradas incluidas.",
+
+    avg_heart_rate: "Frecuencia cardiaca promedio del tramo.",
+    max_heart_rate: "Frecuencia cardiaca máxima del tramo.",
+    dominant_hr_zone: "Zona de FC en la que se pasó más tiempo del tramo, según los umbrales del día.",
+    pct_vigorous_plus: "% del tramo en zona vigorosa o pico.",
+
+    ascent_m: "Metros de subida acumulados en el tramo.",
+    descent_m: "Metros de bajada acumulados en el tramo.",
+    net_elevation_m: "Desnivel neto del tramo (subida menos bajada): positivo si el tramo fue de subida.",
+    gradient_pct: "Pendiente media del tramo (%): desnivel neto sobre la distancia recorrida.",
+    altitude_start_m: "Altitud al empezar el tramo (metros).",
+    altitude_end_m: "Altitud al terminar el tramo (metros).",
+
+    speed_vs_ride_pct: "Velocidad del tramo comparada con la del recorrido completo (%): 100 es el promedio, por debajo de 100 el tramo fue más lento.",
+    is_fastest_split: "TRUE si es el tramo completo más rápido del recorrido.",
+    is_slowest_split: "TRUE si es el tramo completo más lento del recorrido.",
+
+    loaded_at: "Timestamp en que se materializó esta fila en gold."
+  }
+}
+
+js {
+  const MOVING_SPEED_KMH = 5;
+  // Un tramo por debajo de esto es el residuo del final del recorrido, no un parcial comparable.
+  const MIN_COMPLETE_KM = 0.95;
+}
+
+-- Solo los recorridos cuyo ritmo en vivo midió distancia: sin ella no hay kilómetros que partir.
+-- Son 53 de los 181 recorridos de silver.exercise_cycling.
+with rides as (
+  select exercise_log_id, start_at_local, start_date_local, activity_name
+  from ${ref("cycling_rides")}
+  where track_distance_km > 0
+),
+
+points as (
+  select
+    t.exercise_log_id,
+    -- cumulative_distance_km es el acumulado al cerrar ese segundo, así que su parte entera
+    -- es el kilómetro al que pertenece el metro recorrido en él.
+    cast(floor(t.cumulative_distance_km) as int64) as km_index,
+    t.elapsed_sec,
+    t.distance_m,
+    t.speed_kmh,
+    t.heart_rate_bpm,
+    t.hr_zone,
+    t.altitude_m,
+    t.altitude_gain_m
+  from ${ref("exercise_track")} t
+  join rides r using (exercise_log_id)
+),
+
+splits as (
+  select
+    exercise_log_id,
+    km_index,
+
+    sum(coalesce(distance_m, 0)) / 1000 as split_distance_km,
+    min(elapsed_sec) as first_sec,
+    -- +1 porque min y max son los bordes del tramo: de 0 a 59 hay 60 segundos.
+    max(elapsed_sec) - min(elapsed_sec) + 1 as split_seconds,
+    countif(speed_kmh >= ${MOVING_SPEED_KMH}) as moving_seconds,
+
+    avg(if(speed_kmh >= ${MOVING_SPEED_KMH}, speed_kmh, null)) as avg_moving_speed_kmh,
+    max(speed_kmh) as max_speed_kmh,
+
+    avg(heart_rate_bpm) as avg_heart_rate,
+    max(heart_rate_bpm) as max_heart_rate,
+    countif(hr_zone in ('Vigorosa', 'Pico')) as vigorous_plus_seconds,
+    countif(hr_zone is not null) as hr_seconds,
+    countif(hr_zone = 'Bajo ligera') as secs_below_light,
+    countif(hr_zone = 'Ligera') as secs_light,
+    countif(hr_zone = 'Moderada') as secs_moderate,
+    countif(hr_zone = 'Vigorosa') as secs_vigorous,
+    countif(hr_zone = 'Pico') as secs_peak,
+
+    sum(if(altitude_gain_m > 0, altitude_gain_m, 0)) as ascent_m,
+    sum(if(altitude_gain_m < 0, -altitude_gain_m, 0)) as descent_m,
+    min(if(altitude_m is not null, elapsed_sec, null)) as first_alt_sec,
+    max(if(altitude_m is not null, elapsed_sec, null)) as last_alt_sec
+
+  from points
+  group by exercise_log_id, km_index
+),
+
+-- Altitud al empezar y terminar el tramo, tomadas del primer y último segundo con GPS.
+altitudes as (
+  select
+    p.exercise_log_id,
+    p.km_index,
+    max(if(p.elapsed_sec = s.first_alt_sec, p.altitude_m, null)) as altitude_start_m,
+    max(if(p.elapsed_sec = s.last_alt_sec, p.altitude_m, null)) as altitude_end_m
+  from points p
+  join splits s using (exercise_log_id, km_index)
+  where p.elapsed_sec in (s.first_alt_sec, s.last_alt_sec)
+  group by p.exercise_log_id, p.km_index
+),
+
+computed as (
+  select
+    s.exercise_log_id,
+    s.km_index,
+    r.start_at_local,
+    r.start_date_local,
+    r.activity_name,
+
+    s.split_distance_km,
+    s.split_distance_km >= ${MIN_COMPLETE_KM} as is_complete_km,
+    s.first_sec,
+    s.split_seconds,
+    s.moving_seconds,
+
+    -- Velocidad del tramo con paradas incluidas: distancia real entre tiempo real.
+    3600 * s.split_distance_km / s.split_seconds as avg_speed_kmh,
+    s.avg_moving_speed_kmh,
+    s.max_speed_kmh,
+
+    s.avg_heart_rate,
+    s.max_heart_rate,
+    -- Zona con más segundos en el tramo. Se elige a mano y no con approx_top_count porque esa
+    -- función cuenta los NULL: en los tramos donde el reloj midió FC en pocos segundos, el valor
+    -- más frecuente era NULL y tapaba la zona real de los segundos que sí se midieron.
+    (
+      select z.zone
+      from unnest([
+        struct('Pico' as zone, s.secs_peak as secs),
+        struct('Vigorosa', s.secs_vigorous),
+        struct('Moderada', s.secs_moderate),
+        struct('Ligera', s.secs_light),
+        struct('Bajo ligera', s.secs_below_light)
+      ]) z
+      where z.secs > 0
+      -- Empate resuelto hacia la zona más exigente, por el orden del array.
+      order by z.secs desc
+      limit 1
+    ) as dominant_hr_zone,
+    s.vigorous_plus_seconds,
+    s.hr_seconds,
+
+    s.ascent_m,
+    s.descent_m,
+    a.altitude_start_m,
+    a.altitude_end_m
+
+  from splits s
+  join rides r using (exercise_log_id)
+  left join altitudes a using (exercise_log_id, km_index)
+  -- El residuo de los últimos metros no es un parcial: distorsiona velocidades y rankings.
+  where s.split_distance_km >= 0.05
+    and s.split_seconds > 0
+)
+
+select
+  exercise_log_id,
+  km_index,
+  concat('Km ', km_index + 1) as km_label,
+  start_date_local,
+  start_at_local,
+  activity_name,
+
+  round(split_distance_km, 3) as split_distance_km,
+  is_complete_km,
+  round(first_sec / 60, 1) as elapsed_min_at_start,
+  round(split_seconds / 60, 1) as split_duration_min,
+  round(moving_seconds / 60, 1) as moving_min,
+  round((split_seconds - moving_seconds) / 60, 1) as stopped_min,
+
+  round(avg_speed_kmh, 1) as avg_speed_kmh,
+  round(avg_moving_speed_kmh, 1) as avg_moving_speed_kmh,
+  round(max_speed_kmh, 1) as max_speed_kmh,
+  round(safe_divide(split_seconds / 60, split_distance_km), 2) as pace_min_per_km,
+
+  round(avg_heart_rate) as avg_heart_rate,
+  max_heart_rate,
+  dominant_hr_zone,
+  round(100 * safe_divide(vigorous_plus_seconds, hr_seconds), 1) as pct_vigorous_plus,
+
+  round(ascent_m, 1) as ascent_m,
+  round(descent_m, 1) as descent_m,
+  round(ascent_m - descent_m, 1) as net_elevation_m,
+  round(100 * safe_divide(ascent_m - descent_m, split_distance_km * 1000), 1) as gradient_pct,
+  round(altitude_start_m, 1) as altitude_start_m,
+  round(altitude_end_m, 1) as altitude_end_m,
+
+  -- Comparaciones dentro del recorrido: solo entre tramos completos, para no premiar al residuo final.
+  round(100 * safe_divide(
+    avg_speed_kmh,
+    avg(if(is_complete_km, avg_speed_kmh, null)) over (partition by exercise_log_id)
+  ), 1) as speed_vs_ride_pct,
+  is_complete_km and avg_speed_kmh = max(if(is_complete_km, avg_speed_kmh, null)) over (partition by exercise_log_id) as is_fastest_split,
+  is_complete_km and avg_speed_kmh = min(if(is_complete_km, avg_speed_kmh, null)) over (partition by exercise_log_id) as is_slowest_split,
+
+  current_timestamp() as loaded_at
+
+from computed
